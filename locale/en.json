@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Video Subtitle Remover",
+    "description": "Removes burned-in subtitles with the local video-subtitle-remover engine: draw one or more regions on a frame, detect them automatically, or run the whole job in one click, with live progress and the finished path."
+  }
+}

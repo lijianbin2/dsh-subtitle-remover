@@ -1,0 +1,42 @@
+{
+  "name": "dsh-subtitle-remover",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Left-sidebar page in the DSH Web UI that removes burned-in subtitles from videos with the local video-subtitle-remover engine.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lijianbin2/dsh-subtitle-remover.git"
+  },
+  "homepage": "https://github.com/lijianbin2/dsh-subtitle-remover#readme",
+  "bugs": {
+    "url": "https://github.com/lijianbin2/dsh-subtitle-remover/issues"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "runner/vsr_runner.py",
+    "runner/vsr_detect.py",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}
