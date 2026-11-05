@@ -87,6 +87,13 @@ function resolveEnv(cfg) {
   // <workspace>/plugins/dsh-subtitle-remover -> <workspace>/vsr
   rootCandidates.push(path.resolve(HERE, '..', '..', 'vsr'))
   rootCandidates.push(path.join(process.cwd(), 'vsr'))
+  // A market install lives in the profile's node_modules, so also look at the
+  // usual places people keep the engine.
+  for (const base of [os.homedir(), path.join(os.homedir(), 'Documents'), path.join(os.homedir(), 'projects')]) {
+    rootCandidates.push(path.join(base, 'video-subtitle-remover'))
+    rootCandidates.push(path.join(base, 'video_subtitle_remover'))
+    rootCandidates.push(path.join(base, 'vsr'))
+  }
 
   let vsrRoot = ''
   for (const candidate of rootCandidates) {
@@ -98,11 +105,18 @@ function resolveEnv(cfg) {
 
   const pythonCandidates = []
   if (cfg.pythonPath) pythonCandidates.push(cfg.pythonPath)
+  const envDirs = []
   if (vsrRoot) {
-    pythonCandidates.push(path.join(vsrRoot, '..', 'vsr-env', 'Scripts', 'python.exe'))
-    pythonCandidates.push(path.join(vsrRoot, '..', 'vsr-env', 'bin', 'python'))
+    for (const name of ['vsr-env', 'venv', '.venv', 'env']) {
+      envDirs.push(path.join(vsrRoot, '..', name))
+      envDirs.push(path.join(vsrRoot, name))
+    }
   }
-  pythonCandidates.push(path.resolve(HERE, '..', '..', 'vsr-env', 'Scripts', 'python.exe'))
+  envDirs.push(path.resolve(HERE, '..', '..', 'vsr-env'))
+  for (const envDir of envDirs) {
+    pythonCandidates.push(path.join(envDir, 'Scripts', 'python.exe'))
+    pythonCandidates.push(path.join(envDir, 'bin', 'python'))
+  }
   pythonCandidates.push('python')
 
   let pythonPath = 'python'
