@@ -27,6 +27,18 @@ leaving the Harness window.
 The engine itself is a separate Apache-2.0 project; this plugin only spawns it and
 never bundles its code or models.
 
+## Screenshots
+
+The editor: frame preview with the start/end processing range, drag-drawn regions, and
+the detection/model controls.
+
+![Editor: frame preview, start/end range and region list](assets/screenshots/editor.png)
+
+A finished job: the live before/after comparison strip kept from processing, per-job
+metadata with the processing range, and the open-file actions.
+
+![Job card: live comparison, metadata and open buttons](assets/screenshots/result.png)
+
 ## What it adds
 
 - **Sidebar entry** `字幕擦除` / `Subtitle Remover` in the global panel list
