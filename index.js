@@ -86,6 +86,7 @@ function resolveEnv(cfg) {
   if (process.env.DSH_SUBTITLE_REMOVER_ROOT) rootCandidates.push(process.env.DSH_SUBTITLE_REMOVER_ROOT)
   // <workspace>/plugins/dsh-subtitle-remover -> <workspace>/vsr
   rootCandidates.push(path.resolve(HERE, '..', '..', 'vsr'))
+  rootCandidates.push(path.resolve(HERE, '..', 'vsr'))
   rootCandidates.push(path.join(process.cwd(), 'vsr'))
   // A market install lives in the profile's node_modules, so also look at the
   // usual places people keep the engine.
