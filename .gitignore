@@ -4,3 +4,12 @@ __pycache__/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local engine installs (several GB each) live inside the plugin folder but are
+# not part of the repository.
+engine/
+vsr/
+vsr-env/
+video-subtitle-remover/
+venv/
+.venv/

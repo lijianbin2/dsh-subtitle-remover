@@ -11,21 +11,22 @@ leaving the Harness window.
 1. Get [video-subtitle-remover](https://github.com/YaoFANGUK/video-subtitle-remover)
    working on the same machine: models downloaded, its `config/config.json` in
    place, and a Python environment with torch / paddle / cv2 installed.
-2. Clone this repository somewhere stable. Auto-detection covers the two common
-   layouts — the engine (`vsr`) and its environment (`vsr-env`) sitting next to
-   either the repository or its `plugins/` parent:
+2. Clone this repository somewhere stable. Auto-detection covers these layouts — the
+   engine (`vsr`) and its environment (`vsr-env`) either inside the plugin folder or
+   next to it / its `plugins/` parent:
 
    ```
-   <dir>/dsh-subtitle-remover        <parent>/plugins/dsh-subtitle-remover
-   <dir>/vsr                         <parent>/vsr
-   <dir>/vsr-env                     <parent>/vsr-env
+   <repo>/engine/vsr                 <dir>/vsr            <parent>/vsr
+   <repo>/engine/vsr-env             <dir>/vsr-env        <parent>/vsr-env
+   <repo>          ← or             <dir>/dsh-subtitle-remover
    ```
    ```powershell
    cd <dir>          # or <parent>\plugins
    git clone https://github.com/lijianbin2/dsh-subtitle-remover
    ```
-   With either layout nothing needs configuring. Any other layout works too — set
-   `vsrRoot` / `pythonPath` (see [Configuration](#configuration)).
+   With any of these nothing needs configuring — the page's installer uses the
+   `engine/` layout by default. Any other layout works too — set `vsrRoot` /
+   `pythonPath` (see [Configuration](#configuration)), or use the panel to point at it.
 3. Add it to DSH: on the Plugins page add this folder, or call the plugin
    manager's `install_bundle` with its absolute path.
 4. Open the left sidebar entry `字幕擦除` / `Subtitle Remover`.
@@ -121,11 +122,12 @@ detection.
    upgrades and needs no profile editing.
 3. **One-click install** — the same panel can clone the engine and prepare a
    virtualenv with PyTorch / PaddlePaddle (`自动` picks CUDA when an NVIDIA GPU is
-   found, otherwise CPU). It needs `git` and Python 3.10+ on `PATH` and downloads
-   several GB. Model files are not in the engine repository: install the engine,
-   then copy `backend/models` from a video-subtitle-remover release archive (or an
-   existing install) into the cloned folder — the panel says exactly which files
-   are missing.
+   found, otherwise CPU). The target defaults to `engine/video-subtitle-remover`
+   inside the plugin folder and is editable/pickable. It needs `git` and Python
+   3.10+ on `PATH` and downloads several GB. Model files are not in the engine
+   repository: install the engine, then copy `backend/models` from a
+   video-subtitle-remover release archive (or an existing install) into the cloned
+   folder — the panel says exactly which files are missing.
 
 ## Configuration
 

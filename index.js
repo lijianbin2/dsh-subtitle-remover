@@ -159,6 +159,10 @@ function resolveEnv(cfg) {
   // <workspace>/plugins/dsh-subtitle-remover -> <workspace>/vsr
   rootCandidates.push(path.resolve(HERE, '..', '..', 'vsr'))
   rootCandidates.push(path.resolve(HERE, '..', 'vsr'))
+  // Everything inside the plugin folder (the layout the page's installer uses).
+  rootCandidates.push(path.resolve(HERE, 'engine', 'vsr'))
+  rootCandidates.push(path.resolve(HERE, 'engine', 'video-subtitle-remover'))
+  rootCandidates.push(path.resolve(HERE, 'vsr'))
   rootCandidates.push(path.join(process.cwd(), 'vsr'))
   // A market install lives in the profile's node_modules, so also look at the
   // usual places people keep the engine.
@@ -195,6 +199,8 @@ function resolveEnv(cfg) {
     pythonCandidates.push({ value: path.join(vsrRoot, 'runtime', 'python.exe'), source: 'auto' })
   }
   envDirs.push(path.resolve(HERE, '..', '..', 'vsr-env'))
+  envDirs.push(path.resolve(HERE, 'engine', 'vsr-env'))
+  envDirs.push(path.resolve(HERE, 'vsr-env'))
   for (const envDir of envDirs) {
     pythonCandidates.push({ value: path.join(envDir, 'Scripts', 'python.exe'), source: 'auto' })
     pythonCandidates.push({ value: path.join(envDir, 'bin', 'python'), source: 'auto' })
@@ -249,6 +255,7 @@ function resolveEnv(cfg) {
     modelsMissing,
     optionalModelsMissing,
     settingsFile: SETTINGS_FILE,
+    suggestedTarget: path.join(HERE, 'engine', 'video-subtitle-remover'),
     ready: engineReady && runnerReady && pythonPath !== '',
     jobReady: engineReady && runnerReady && pythonPath !== '' && modelsMissing.length === 0,
     problems,
@@ -1452,7 +1459,7 @@ function scanEngines(cfg) {
 
   return {
     found,
-    suggestedTarget: path.join(os.homedir(), 'video-subtitle-remover'),
+    suggestedTarget: path.join(HERE, 'engine', 'video-subtitle-remover'),
   }
 }
 

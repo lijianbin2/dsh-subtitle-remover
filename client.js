@@ -77,7 +77,7 @@ window.__ModuleLoader__.load({
         'setup.installStart': '开始安装',
         'setup.installRunning': '安装中 · {stage} · {p}%',
         'setup.installCancel': '取消安装',
-        'setup.installHint': '会 clone 引擎并安装 PyTorch / PaddlePaddle（数 GB，可能十几分钟）。模型文件不在仓库里，装完会提示怎么补。',
+        'setup.installHint': '会 clone 引擎并安装 PyTorch / PaddlePaddle（数 GB，可能十几分钟）。默认装到插件目录下的 engine/ 里，也可以选别处。模型文件不在仓库里，装完会提示怎么补。',
         'setup.installDone': '安装完成',
         'setup.installFailed': '安装失败：{message}',
         'setup.saved': '已保存引擎设置',
@@ -249,7 +249,7 @@ window.__ModuleLoader__.load({
         'setup.installStart': 'Start install',
         'setup.installRunning': 'Installing · {stage} · {p}%',
         'setup.installCancel': 'Cancel install',
-        'setup.installHint': 'Clones the engine and installs PyTorch / PaddlePaddle (several GB, often 10+ minutes). Model files are not in the repository; the result tells you what to add.',
+        'setup.installHint': 'Clones the engine and installs PyTorch / PaddlePaddle (several GB, often 10+ minutes). It defaults to engine/ inside the plugin folder; pick another folder if you prefer. Model files are not in the repository; the result tells you what to add.',
         'setup.installDone': 'Install finished',
         'setup.installFailed': 'Install failed: {message}',
         'setup.saved': 'Engine settings saved',
@@ -845,11 +845,13 @@ window.__ModuleLoader__.load({
       const [flavor, setFlavor] = useState('auto')
       const [installTask, setInstallTask] = useState(null)
       const [installing, setInstalling] = useState(false)
-      const [picking, setPicking] = useState(false)
+      const [picking, setPicking] = useState(null)
 
       useEffect(() => {
-        if (!targetDir && scan && scan.suggestedTarget) setTargetDir(scan.suggestedTarget)
-      }, [scan, targetDir])
+        if (targetDir) return
+        if (env && env.suggestedTarget) setTargetDir(env.suggestedTarget)
+        else if (scan && scan.suggestedTarget) setTargetDir(scan.suggestedTarget)
+      }, [env, scan, targetDir])
 
       const save = async (nextRoot, nextPython) => {
         setBusy(true)
@@ -966,7 +968,7 @@ window.__ModuleLoader__.load({
               h('button', {
                 type: 'button',
                 className: 'vsr-btn',
-                onClick: () => setPicking(true),
+                onClick: () => setPicking('root'),
               }, t('form.browse')),
             ),
           ),
@@ -1012,12 +1014,15 @@ window.__ModuleLoader__.load({
           h('div', { className: 'vsr-hint' }, t('setup.installHint')),
           h('div', { className: 'vsr-setup-grid' },
             h(Field, { label: t('setup.installTarget') },
-              h('input', {
-                className: 'vsr-input',
-                value: targetDir,
-                spellCheck: false,
-                onChange: (event) => setTargetDir(event.target.value),
-              }),
+              h('div', { className: 'vsr-row' },
+                h('input', {
+                  className: 'vsr-input',
+                  value: targetDir,
+                  spellCheck: false,
+                  onChange: (event) => setTargetDir(event.target.value),
+                }),
+                h('button', { type: 'button', className: 'vsr-btn', onClick: () => setPicking('install') }, t('form.browse')),
+              ),
             ),
             h(Field, { label: t('setup.installFlavor') },
               h('select', {
@@ -1057,9 +1062,13 @@ window.__ModuleLoader__.load({
           ? h(BrowseDialog, {
             t,
             mode: 'dir',
-            initialPath: root || '',
-            onCancel: () => setPicking(false),
-            onPick: (picked) => { setRoot(picked); setPicking(false) },
+            initialPath: (picking === 'install' ? targetDir : root) || '',
+            onCancel: () => setPicking(null),
+            onPick: (picked) => {
+              if (picking === 'install') setTargetDir(picked)
+              else setRoot(picked)
+              setPicking(null)
+            },
           })
           : null,
       )
