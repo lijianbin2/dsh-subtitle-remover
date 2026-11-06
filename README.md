@@ -11,14 +11,20 @@ leaving the Harness window.
 1. Get [video-subtitle-remover](https://github.com/YaoFANGUK/video-subtitle-remover)
    working on the same machine: models downloaded, its `config/config.json` in
    place, and a Python environment with torch / paddle / cv2 installed.
-2. Clone this repository somewhere stable. The auto-detection expects the layout
-   `<parent>/plugins/dsh-subtitle-remover` next to `<parent>/vsr` and
-   `<parent>/vsr-env`:
+2. Clone this repository somewhere stable. Auto-detection covers the two common
+   layouts — the engine (`vsr`) and its environment (`vsr-env`) sitting next to
+   either the repository or its `plugins/` parent:
+
+   ```
+   <dir>/dsh-subtitle-remover        <parent>/plugins/dsh-subtitle-remover
+   <dir>/vsr                         <parent>/vsr
+   <dir>/vsr-env                     <parent>/vsr-env
+   ```
    ```powershell
-   cd <parent>\plugins
+   cd <dir>          # or <parent>\plugins
    git clone https://github.com/lijianbin2/dsh-subtitle-remover
    ```
-   With that layout nothing needs configuring. Any other layout works too — set
+   With either layout nothing needs configuring. Any other layout works too — set
    `vsrRoot` / `pythonPath` (see [Configuration](#configuration)).
 3. Add it to DSH: on the Plugins page add this folder, or call the plugin
    manager's `install_bundle` with its absolute path.
