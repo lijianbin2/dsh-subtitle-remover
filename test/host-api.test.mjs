@@ -155,11 +155,32 @@ async function main() {
   const afterSave = await call('GET', '/dsh-subtitle-remover/api/state')
   check('state reflects saved settings', afterSave.body.env.vsrSource === 'settings')
 
+  const cleared = await call('POST', '/dsh-subtitle-remover/api/env/save', {
+    body: { vsrRoot: state.body.env.vsrRoot, pythonPath: '' },
+  })
+  check('empty python clears the saved interpreter', cleared.status === 200 && cleared.body.env.pythonSource !== 'settings', cleared.body.env && cleared.body.env.pythonSource)
+
+  const barePython = await call('POST', '/dsh-subtitle-remover/api/env/validate', {
+    body: { vsrRoot: state.body.env.vsrRoot, pythonPath: 'python' },
+  })
+  check('bare command name is not path-resolved', barePython.body.pythonPath === 'python' && barePython.body.pythonOk === true,
+    `${barePython.body.pythonPath} ok=${barePython.body.pythonOk}`)
+
+  check('state exposes install slots', Boolean(state.body.install && 'active' in state.body.install && 'last' in state.body.install))
+
   const reset = await call('POST', '/dsh-subtitle-remover/api/env/reset', { body: {} })
   check('reset returns to auto-detect', reset.status === 200 && reset.body.env.vsrSource === 'auto', reset.body.env && reset.body.env.vsrSource)
 
   const badInstall = await call('POST', '/dsh-subtitle-remover/api/env/install', { body: { targetDir: HERE } })
   check('install refuses a non-empty target', badInstall.status === 400 && /不为空/.test(badInstall.body.error), `${badInstall.status} ${badInstall.body.error}`)
+
+  if (process.platform === 'win32') {
+    const systemInstall = await call('POST', '/dsh-subtitle-remover/api/env/install', { body: { targetDir: 'C:\\Windows\\Temp\\vsr-install-test' } })
+    check('install refuses a system folder', systemInstall.status === 400 && /系统目录/.test(systemInstall.body.error), `${systemInstall.status} ${systemInstall.body.error}`)
+  }
+
+  const unknownCancel = await call('POST', '/dsh-subtitle-remover/api/env/install/nope/cancel', { body: {} })
+  check('cancel unknown install is 404', unknownCancel.status === 404)
 
   // Browse -----------------------------------------------------------------
   const browse = await call('GET', `/dsh-subtitle-remover/api/browse?path=${encodeURIComponent(HERE)}`)

@@ -846,6 +846,36 @@ window.__ModuleLoader__.load({
       const [installTask, setInstallTask] = useState(null)
       const [installing, setInstalling] = useState(false)
       const [picking, setPicking] = useState(null)
+      const localInstalls = useRef(new Set())
+      const announcedInstall = useRef('')
+
+      // A task that was already running when the panel opened (page reload, or a
+      // second tab) comes from /state; mirror it so progress and the result are
+      // not lost.
+      useEffect(() => {
+        const remote = props.install && (props.install.active || props.install.last)
+        if (!remote) return
+        if (!installTask || remote.id === installTask.id) {
+          if (!installTask || remote.logLines !== installTask.logLines || remote.status !== installTask.status) {
+            setInstallTask(remote)
+          }
+        }
+      }, [props.install, installTask])
+
+      useEffect(() => {
+        if (!installTask || installTask.status === 'running') return
+        if (localInstalls.current.has(installTask.id)) return
+        if (announcedInstall.current === installTask.id) return
+        // A task from hours ago is history, not news.
+        if (installTask.finishedAt && Date.now() - installTask.finishedAt > 10 * 60 * 1000) return
+        announcedInstall.current = installTask.id
+        setMessage(installTask.status === 'done'
+          ? { kind: installTask.ready ? 'ok' : 'error', text: installTask.message || t('setup.installDone') }
+          : { kind: 'error', text: t('setup.installFailed', { message: installTask.message || installTask.status }) })
+        if (installTask.targetDir) setRoot(installTask.targetDir)
+        if (installTask.venvPython) setPython(installTask.venvPython)
+        props.onRefresh()
+      }, [installTask])
 
       useEffect(() => {
         if (targetDir) return
@@ -858,8 +888,8 @@ window.__ModuleLoader__.load({
         setMessage(null)
         try {
           const payload = { vsrRoot: (nextRoot !== undefined ? nextRoot : root).trim() }
-          const py = (nextPython !== undefined ? nextPython : python).trim()
-          if (py) payload.pythonPath = py
+          // Always send the field: an empty value explicitly means "auto-detect".
+          payload.pythonPath = (nextPython !== undefined ? nextPython : python).trim()
           const res = await api('/env/save', payload)
           setMessage({ kind: 'ok', text: t('setup.saved') })
           props.onRefresh(res.env)
@@ -913,6 +943,7 @@ window.__ModuleLoader__.load({
             flavor,
             pythonPath: python.trim() || undefined,
           })
+          if (started.task && started.task.id) localInstalls.current.add(started.task.id)
           let task = started.task
           setInstallTask(task)
           while (task && task.status === 'running') {
@@ -1101,6 +1132,7 @@ window.__ModuleLoader__.load({
       const [viewSide, setViewSide] = useState('start')
       const [catalogue, setCatalogue] = useState(null)
       const [setupOpen, setSetupOpen] = useState(false)
+      const [installState, setInstallState] = useState(null)
       const lastProbedPath = useRef('')
 
       useEffect(() => {
@@ -1126,6 +1158,7 @@ window.__ModuleLoader__.load({
             setEnv(state.env || null)
             setJobs(Array.isArray(state.jobs) ? state.jobs : [])
             setActive(state.active || '')
+            setInstallState(state.install || null)
             setOffline('')
             const watch = selectedId || state.active || (state.jobs && state.jobs[0] ? state.jobs[0].id : '')
             if (watch) {
@@ -1473,6 +1506,7 @@ window.__ModuleLoader__.load({
             ? h(SetupPanel, {
               t,
               env,
+              install: installState,
               onClose: () => setSetupOpen(false),
               onRefresh: (nextEnv) => {
                 if (nextEnv) setEnv(nextEnv)

@@ -1397,7 +1397,9 @@ async function validateEngineInput(input) {
   }
 
   if (pythonText) {
-    const py = pythonText === 'python' ? 'python' : path.resolve(pythonText)
+    // A bare command name ("python", "py") must not be turned into a path.
+    const looksLikePath = /^[A-Za-z]:[\\/]/.test(pythonText) || pythonText.startsWith('\\\\') || pythonText.startsWith('/') || /[\\/]/.test(pythonText)
+    const py = pythonText === 'python' ? 'python' : (looksLikePath ? path.resolve(pythonText) : pythonText)
     result.pythonPath = py
     const probe = await probePython(py)
     result.pythonOk = probe.ok
@@ -1421,10 +1423,13 @@ function scanEngines(cfg) {
   if (cfg.defaultDir) roots.push(cfg.defaultDir)
   if (cfg.vsrRoot) roots.push(path.dirname(cfg.vsrRoot))
   const home = os.homedir()
+  // The plugin's own folder is the most likely place (the installer defaults to
+  // engine/ inside it), and it is cheap to check.
+  roots.push(path.join(HERE, 'engine'))
+  roots.push(path.resolve(HERE, '..'))
   for (const base of [home, path.join(home, 'Documents'), path.join(home, 'Downloads'), path.join(home, 'Desktop'), path.join(home, 'projects')]) {
     roots.push(base)
   }
-  if (process.platform === 'win32') roots.push(...listDrives())
 
   const seen = new Set()
   const found = []
@@ -1457,6 +1462,15 @@ function scanEngines(cfg) {
     if (Date.now() > deadline) break
   }
 
+  // Only fall back to scanning whole drives when the cheap places found nothing;
+  // a network drive can otherwise eat the whole budget for no benefit.
+  if (!found.length) {
+    for (const drive of listDrives()) {
+      if (Date.now() > deadline || found.length >= 8) break
+      visit(drive, 2)
+    }
+  }
+
   return {
     found,
     suggestedTarget: path.join(HERE, 'engine', 'video-subtitle-remover'),
@@ -1466,6 +1480,7 @@ function scanEngines(cfg) {
 function createInstallStore(cfg) {
   const tasks = new Map()
   let activeId = null
+  let lastId = null
   let seq = 0
 
   function pushLog(task, line) {
@@ -1481,6 +1496,7 @@ function createInstallStore(cfg) {
     task.message = message || ''
     task.finishedAt = Date.now()
     if (activeId === task.id) activeId = null
+    lastId = task.id
     if (message) pushLog(task, message)
   }
 
@@ -1597,7 +1613,19 @@ function createInstallStore(cfg) {
         settle(task, 'done', '引擎安装完成')
       }
     } catch (error) {
-      settle(task, 'failed', String(error && error.message ? error.message : error))
+      const message = String(error && error.message ? error.message : error)
+      // A failed step leaves a half-built directory behind; the target guard
+      // rejects non-empty folders, so say what to do next.
+      const hint = (() => {
+        try {
+          return isDir(task.targetDir) && fs.readdirSync(task.targetDir).length
+            ? '。目标目录里留有半成品，删除它或换一个空目录后重试'
+            : ''
+        } catch {
+          return ''
+        }
+      })()
+      settle(task, 'failed', message + hint)
     }
   }
 
@@ -1628,6 +1656,9 @@ function createInstallStore(cfg) {
     const targetDir = path.resolve(targetText)
     const parent = path.dirname(targetDir)
     if (!isDir(parent)) throw fail(`上级目录不存在：${parent}`, 400)
+    if (/^[A-Za-z]:[\\/](windows|program files|program files \(x86\)|programdata)([\\/]|$)/i.test(targetDir)) {
+      throw fail('不要安装到系统目录，请换一个普通文件夹', 400)
+    }
     if (isDir(targetDir) && fs.readdirSync(targetDir).length) throw fail('目标目录不为空，请换一个空目录', 400)
     if (activeId) {
       const current = tasks.get(activeId)
@@ -1676,9 +1707,10 @@ function createInstallStore(cfg) {
 
   function get(id) { return tasks.get(String(id || '')) || null }
   function active() { return activeId ? publicTask(tasks.get(activeId)) : null }
-  function dispose() { for (const task of tasks.values()) killTree(task.child); tasks.clear(); activeId = null }
+  function last() { return lastId ? publicTask(tasks.get(lastId)) : null }
+  function dispose() { for (const task of tasks.values()) killTree(task.child); tasks.clear(); activeId = null; lastId = null }
 
-  return { start, cancel, get, active, publicTask, dispose }
+  return { start, cancel, get, active, last, publicTask, dispose }
 }
 
 // ---------------------------------------------------------------------------
@@ -1821,7 +1853,7 @@ function createHandler(cfg, jobs, detects, installs, models, originOf) {
             jobs: jobs.list(),
             active: jobs.active(),
             detect: { active: detects.active() },
-            install: installs.active(),
+            install: { active: installs.active(), last: installs.last() },
           })
         }
         if (route === '/jobs') return send(200, { jobs: jobs.list(), active: jobs.active() })
@@ -1926,12 +1958,15 @@ function createHandler(cfg, jobs, detects, installs, models, originOf) {
           if (!checked.vsrOk) {
             throw fail(`引擎目录不可用：${checked.problems.join('；') || '请选择包含 backend/main.py 的目录'}`, 400)
           }
-          if (body.pythonPath && checked.pythonOk === false) {
+          const pythonText = String(body.pythonPath === undefined ? '' : body.pythonPath).trim()
+          if (pythonText && checked.pythonOk === false) {
             throw fail(`Python 不可用：${checked.problems.join('；')}`, 400)
           }
-          const patch = { vsrRoot: checked.vsrRoot }
-          if (checked.pythonPath) patch.pythonPath = checked.pythonPath
-          writeSettings(patch)
+          const next = readSettings()
+          next.vsrRoot = checked.vsrRoot
+          if (pythonText) next.pythonPath = checked.pythonPath || pythonText
+          else delete next.pythonPath // an empty field means "back to auto-detect"
+          writeSettingsFile(next)
           return send(200, { env: resolveEnv(cfg), saved: readSettings() })
         }
         if (route === '/env/reset') {
