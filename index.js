@@ -75,13 +75,85 @@ function normalizeConfig(raw) {
   }
 }
 
+/** User-visible engine settings, stored outside the profile so upgrades keep them. */
+const SETTINGS_FILE = path.join(
+  process.env.DSH_HOME || path.join(os.homedir(), '.dsh'),
+  'data',
+  'dsh-subtitle-remover',
+  'settings.json',
+)
+
+function readSettings() {
+  try {
+    const value = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'))
+    return value && typeof value === 'object' ? value : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeSettingsFile(value) {
+  const dir = path.dirname(SETTINGS_FILE)
+  fs.mkdirSync(dir, { recursive: true })
+  const temp = `${SETTINGS_FILE}.${process.pid}.tmp`
+  fs.writeFileSync(temp, JSON.stringify(value, null, 2))
+  fs.renameSync(temp, SETTINGS_FILE)
+  return value
+}
+
+function writeSettings(patch) {
+  const next = Object.assign({}, readSettings(), patch)
+  return writeSettingsFile(next)
+}
+
+function clearSettings() {
+  const next = readSettings()
+  delete next.vsrRoot
+  delete next.pythonPath
+  writeSettingsFile(next)
+  return readSettings()
+}
+
+/** Model files the engine cannot run without, relative to the checkout. */
+const REQUIRED_MODELS = [
+  ['backend/models/big-lama/big-lama.pt', 'big-lama'],
+  ['backend/models/sttn-auto/infer_model.pth', 'sttn-auto'],
+]
+const OPTIONAL_MODELS = [
+  ['backend/models/sttn-det/sttn.pth', 'sttn-det'],
+  ['backend/models/propainter/ProPainter.pth', 'propainter'],
+]
+
+function missingModels(root) {
+  if (!root) return REQUIRED_MODELS.map(([, name]) => name)
+  return REQUIRED_MODELS
+    .filter(([rel]) => !isFile(path.join(root, rel)))
+    .map(([, name]) => name)
+}
+
+function optionalMissingModels(root) {
+  if (!root) return []
+  return OPTIONAL_MODELS
+    .filter(([rel]) => !isFile(path.join(root, rel)))
+    .map(([, name]) => name)
+}
+
 /**
  * Resolve the engine, its interpreter, ffmpeg and ffprobe on every call: the page
  * can show a live verdict, and installing the engine while the GUI is open does
  * not require a restart.
+ *
+ * Precedence: the page's saved choice, then the profile config, then automatic
+ * detection. Users who never open the settings keep working through detection.
  */
 function resolveEnv(cfg) {
+  const saved = readSettings()
+  const savedRoot = typeof saved.vsrRoot === 'string' ? saved.vsrRoot.trim() : ''
+  const savedPython = typeof saved.pythonPath === 'string' ? saved.pythonPath.trim() : ''
+
   const rootCandidates = []
+  let vsrSource = 'auto'
+  if (savedRoot) rootCandidates.push(savedRoot)
   if (cfg.vsrRoot) rootCandidates.push(cfg.vsrRoot)
   if (process.env.DSH_SUBTITLE_REMOVER_ROOT) rootCandidates.push(process.env.DSH_SUBTITLE_REMOVER_ROOT)
   // <workspace>/plugins/dsh-subtitle-remover -> <workspace>/vsr
@@ -97,33 +169,42 @@ function resolveEnv(cfg) {
   }
 
   let vsrRoot = ''
-  for (const candidate of rootCandidates) {
+  for (let index = 0; index < rootCandidates.length; index += 1) {
+    const candidate = rootCandidates[index]
     if (candidate && isFile(path.join(candidate, 'backend', 'main.py'))) {
       vsrRoot = path.resolve(candidate)
+      if (index === 0 && savedRoot) vsrSource = 'settings'
+      else if (cfg.vsrRoot && candidate === cfg.vsrRoot) vsrSource = 'config'
       break
     }
   }
 
   const pythonCandidates = []
-  if (cfg.pythonPath) pythonCandidates.push(cfg.pythonPath)
+  let pythonSource = 'auto'
+  if (savedPython) pythonCandidates.push({ value: savedPython, source: 'settings' })
+  if (cfg.pythonPath) pythonCandidates.push({ value: cfg.pythonPath, source: 'config' })
   const envDirs = []
   if (vsrRoot) {
     for (const name of ['vsr-env', 'venv', '.venv', 'env']) {
       envDirs.push(path.join(vsrRoot, '..', name))
       envDirs.push(path.join(vsrRoot, name))
     }
+    // Prebuilt / portable distributions sometimes carry the interpreter inline.
+    pythonCandidates.push({ value: path.join(vsrRoot, 'python.exe'), source: 'auto' })
+    pythonCandidates.push({ value: path.join(vsrRoot, 'python', 'python.exe'), source: 'auto' })
+    pythonCandidates.push({ value: path.join(vsrRoot, 'runtime', 'python.exe'), source: 'auto' })
   }
   envDirs.push(path.resolve(HERE, '..', '..', 'vsr-env'))
   for (const envDir of envDirs) {
-    pythonCandidates.push(path.join(envDir, 'Scripts', 'python.exe'))
-    pythonCandidates.push(path.join(envDir, 'bin', 'python'))
+    pythonCandidates.push({ value: path.join(envDir, 'Scripts', 'python.exe'), source: 'auto' })
+    pythonCandidates.push({ value: path.join(envDir, 'bin', 'python'), source: 'auto' })
   }
-  pythonCandidates.push('python')
+  pythonCandidates.push({ value: 'python', source: 'auto' })
 
   let pythonPath = 'python'
   for (const candidate of pythonCandidates) {
-    if (candidate === 'python') { pythonPath = 'python'; break }
-    if (isFile(candidate)) { pythonPath = candidate; break }
+    if (candidate.value === 'python') { pythonPath = 'python'; pythonSource = 'path'; break }
+    if (isFile(candidate.value)) { pythonPath = candidate.value; pythonSource = candidate.source; break }
   }
 
   const resolveBinary = (explicit, bundledName, fallback) => {
@@ -143,14 +224,20 @@ function resolveEnv(cfg) {
 
   const runnerReady = isFile(path.join(RUNNER_DIR, 'vsr_runner.py')) && isFile(path.join(RUNNER_DIR, 'vsr_detect.py'))
   const engineReady = Boolean(vsrRoot)
+  const modelsMissing = missingModels(vsrRoot)
+  const optionalModelsMissing = optionalMissingModels(vsrRoot)
   const problems = []
   if (!engineReady) problems.push('找不到 video-subtitle-remover 目录（需要其中的 backend/main.py）')
   if (!runnerReady) problems.push('插件缺少 runner/vsr_runner.py 或 runner/vsr_detect.py')
-  if (!engineReady) problems.push('可以设置 config.vsrRoot 指向引擎目录')
+  if (engineReady && modelsMissing.length) {
+    problems.push(`引擎缺少模型文件：${modelsMissing.join('、')}（擦除会失败，检测仍可用）`)
+  }
 
   return {
     vsrRoot,
+    vsrSource,
     pythonPath,
+    pythonSource,
     pythonFound: pythonPath === 'python' ? null : isFile(pythonPath),
     ffmpegPath: ffmpeg.path,
     ffmpegFound: ffmpeg.found,
@@ -159,7 +246,11 @@ function resolveEnv(cfg) {
     runnerPath: RUNNER_DIR,
     runnerReady,
     engineReady,
+    modelsMissing,
+    optionalModelsMissing,
+    settingsFile: SETTINGS_FILE,
     ready: engineReady && runnerReady && pythonPath !== '',
+    jobReady: engineReady && runnerReady && pythonPath !== '' && modelsMissing.length === 0,
     problems,
   }
 }
@@ -684,6 +775,9 @@ function createJobStore(cfg) {
     const body = input && typeof input === 'object' ? input : {}
     const env = resolveEnv(cfg)
     if (!env.ready) throw fail(`引擎环境未就绪：${env.problems.join('；')}`, 400)
+    if (!env.jobReady) {
+      throw fail(`引擎缺少模型文件：${env.modelsMissing.join('、')}；补齐后才能擦除（自动识别字幕区仍可用）`, 400)
+    }
     if (activeId) {
       const current = jobs.get(activeId)
       if (current && (current.status === 'running' || current.status === 'queued')) {
@@ -1216,6 +1310,371 @@ function createDetectStore(cfg, modelServices) {
 }
 
 // ---------------------------------------------------------------------------
+// Engine setup: validation, scanning, guided install
+// ---------------------------------------------------------------------------
+
+function probePython(pythonPath, timeoutMs = 15000) {
+  return new Promise((resolve) => {
+    let child = null
+    try {
+      child = spawn(pythonPath, ['-c', 'import sys; print(sys.version.split()[0])'], {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (error) {
+      resolve({ ok: false, version: '', message: String(error && error.message ? error.message : error) })
+      return
+    }
+    let out = ''
+    let err = ''
+    let done = false
+    const finish = (value) => {
+      if (done) return
+      done = true
+      resolve(value)
+    }
+    const timer = setTimeout(() => {
+      killTree(child)
+      finish({ ok: false, version: '', message: '超时' })
+    }, timeoutMs)
+    if (timer.unref) timer.unref()
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => { out += chunk })
+    child.stderr.on('data', (chunk) => { err += chunk })
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      finish({ ok: false, version: '', message: String(error && error.message ? error.message : error) })
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0) {
+        finish({ ok: true, version: out.trim().split(/\s+/).pop(), message: '' })
+        return
+      }
+      finish({ ok: false, version: '', message: (err || `退出码 ${code}`).trim().slice(-200) })
+    })
+  })
+}
+
+async function validateEngineInput(input) {
+  const body = input && typeof input === 'object' ? input : {}
+  const rootText = String(body.vsrRoot || '').trim()
+  const pythonText = String(body.pythonPath || '').trim()
+  const result = {
+    vsrRoot: '',
+    vsrOk: false,
+    pythonPath: '',
+    pythonOk: null,
+    pythonVersion: '',
+    modelsMissing: [],
+    optionalModelsMissing: [],
+    problems: [],
+  }
+
+  if (rootText) {
+    const root = path.resolve(rootText)
+    result.vsrRoot = root
+    if (!isDir(root)) {
+      result.problems.push('目录不存在')
+    } else if (!isFile(path.join(root, 'backend', 'main.py'))) {
+      result.problems.push('这个目录里没有 backend/main.py（需要 video-subtitle-remover 的源码目录）')
+    } else {
+      result.vsrOk = true
+      result.modelsMissing = missingModels(root)
+      result.optionalModelsMissing = optionalMissingModels(root)
+      if (result.modelsMissing.length) {
+        result.problems.push(`缺少模型文件：${result.modelsMissing.join('、')}`)
+      }
+    }
+  }
+
+  if (pythonText) {
+    const py = pythonText === 'python' ? 'python' : path.resolve(pythonText)
+    result.pythonPath = py
+    const probe = await probePython(py)
+    result.pythonOk = probe.ok
+    result.pythonVersion = probe.version
+    if (!probe.ok) result.problems.push(`Python 不可用：${probe.message}`)
+  }
+
+  return result
+}
+
+const SCAN_SKIP = new Set([
+  'windows', 'program files', 'program files (x86)', 'programdata', 'appdata', '$recycle.bin',
+  'system volume information', 'node_modules', '.git', 'windows.old', 'recovery',
+])
+
+/** Shallow, time-boxed scan for checkouts of the engine. */
+function scanEngines(cfg) {
+  const roots = []
+  const saved = readSettings()
+  if (saved.vsrRoot) roots.push(path.dirname(saved.vsrRoot))
+  if (cfg.defaultDir) roots.push(cfg.defaultDir)
+  if (cfg.vsrRoot) roots.push(path.dirname(cfg.vsrRoot))
+  const home = os.homedir()
+  for (const base of [home, path.join(home, 'Documents'), path.join(home, 'Downloads'), path.join(home, 'Desktop'), path.join(home, 'projects')]) {
+    roots.push(base)
+  }
+  if (process.platform === 'win32') roots.push(...listDrives())
+
+  const seen = new Set()
+  const found = []
+  const deadline = Date.now() + 6000
+  const visit = (dir, depth) => {
+    if (Date.now() > deadline || found.length >= 8) return
+    let entries = []
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    let count = 0
+    for (const entry of entries) {
+      if (count > 250 || Date.now() > deadline || found.length >= 8) break
+      count += 1
+      if (!entry.isDirectory()) continue
+      if (SCAN_SKIP.has(entry.name.toLowerCase())) continue
+      const full = path.join(dir, entry.name)
+      if (seen.has(full)) continue
+      seen.add(full)
+      if (isFile(path.join(full, 'backend', 'main.py'))) {
+        found.push({ root: full, modelsMissing: missingModels(full) })
+        continue
+      }
+      if (depth > 0) visit(full, depth - 1)
+    }
+  }
+
+  for (const root of roots) {
+    if (!root || !isDir(root)) continue
+    const resolved = path.resolve(root)
+    visit(resolved, /^[A-Za-z]:\\?$/.test(resolved) ? 2 : 1)
+    if (Date.now() > deadline) break
+  }
+
+  return {
+    found,
+    suggestedTarget: path.join(os.homedir(), 'video-subtitle-remover'),
+  }
+}
+
+function createInstallStore(cfg) {
+  const tasks = new Map()
+  let activeId = null
+  let seq = 0
+
+  function pushLog(task, line) {
+    const text = String(line == null ? '' : line).replace(/\s+$/, '')
+    if (!text) return
+    task.log.push(text)
+    if (task.log.length > 600) task.log.splice(0, task.log.length - 300)
+  }
+
+  function settle(task, status, message) {
+    if (task.status === 'done' || task.status === 'failed' || task.status === 'cancelled') return
+    task.status = status
+    task.message = message || ''
+    task.finishedAt = Date.now()
+    if (activeId === task.id) activeId = null
+    if (message) pushLog(task, message)
+  }
+
+  function step(task, label, command, args, percent, cwd) {
+    task.stage = label
+    task.percent = percent
+    task.message = label
+    pushLog(task, `$ ${command} ${args.join(' ')}`)
+    return new Promise((resolve, reject) => {
+      let child = null
+      try {
+        child = spawn(command, args, {
+          windowsHide: true,
+          cwd: cwd || undefined,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', PIP_DISABLE_PIP_VERSION_CHECK: '1' },
+        })
+      } catch (error) {
+        reject(new Error(`${label} 无法启动：${error && error.message ? error.message : error}`))
+        return
+      }
+      task.child = child
+      child.stdout.setEncoding('utf8')
+      child.stderr.setEncoding('utf8')
+      const onData = (chunk) => {
+        for (const line of String(chunk).split(/\r?\n/)) if (line.trim()) pushLog(task, line)
+      }
+      child.stdout.on('data', onData)
+      child.stderr.on('data', onData)
+      child.on('error', (error) => {
+        task.child = null
+        reject(new Error(`${label} 出错：${error && error.message ? error.message : error}`))
+      })
+      child.on('close', (code) => {
+        task.child = null
+        if (task.status === 'cancelled') {
+          reject(new Error('安装已取消'))
+          return
+        }
+        if (code === 0) resolve()
+        else reject(new Error(`${label} 失败（退出码 ${code}，详见日志）`))
+      })
+    })
+  }
+
+  async function detectFlavor(requested) {
+    if (requested === 'cpu' || requested === 'cuda118') return requested
+    return new Promise((resolve) => {
+      let child = null
+      try {
+        child = spawn('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })
+      } catch {
+        resolve('cpu')
+        return
+      }
+      let out = ''
+      child.stdout.setEncoding('utf8')
+      child.stdout.on('data', (chunk) => { out += chunk })
+      child.on('error', () => resolve('cpu'))
+      child.on('close', (code) => resolve(code === 0 && out.trim() ? 'cuda118' : 'cpu'))
+    })
+  }
+
+  async function run(task) {
+    try {
+      const flavor = await detectFlavor(task.flavor)
+      task.flavor = flavor
+      pushLog(task, `安装模式：${flavor === 'cuda118' ? 'CUDA 11.8（NVIDIA）' : 'CPU'}，目标目录 ${task.targetDir}`)
+
+      await step(task, '克隆 video-subtitle-remover', 'git',
+        ['clone', '--depth', '1', 'https://github.com/YaoFANGUK/video-subtitle-remover', task.targetDir], 10,
+        path.dirname(task.targetDir))
+
+      const venvDir = path.join(task.targetDir, 'venv')
+      await step(task, '创建虚拟环境', task.python, ['-m', 'venv', venvDir], 20)
+      const venvPython = process.platform === 'win32'
+        ? path.join(venvDir, 'Scripts', 'python.exe')
+        : path.join(venvDir, 'bin', 'python')
+      task.venvPython = venvPython
+
+      await step(task, '升级 pip', venvPython, ['-m', 'pip', 'install', '-U', 'pip'], 26)
+
+      const torchIndex = flavor === 'cuda118'
+        ? 'https://download.pytorch.org/whl/cu118'
+        : 'https://download.pytorch.org/whl/cpu'
+      await step(task, '安装 PyTorch', venvPython,
+        ['-m', 'pip', 'install', 'torch==2.7.0', 'torchvision==0.22.0', '--index-url', torchIndex], 55)
+
+      const paddleIndex = flavor === 'cuda118'
+        ? 'https://www.paddlepaddle.org.cn/packages/stable/cu118/'
+        : 'https://www.paddlepaddle.org.cn/packages/stable/cpu/'
+      const paddlePkg = flavor === 'cuda118' ? 'paddlepaddle-gpu==3.0.0' : 'paddlepaddle==3.0.0'
+      await step(task, '安装 PaddlePaddle', venvPython, ['-m', 'pip', 'install', paddlePkg, '-i', paddleIndex], 72)
+
+      await step(task, '安装其余依赖', venvPython,
+        ['-m', 'pip', 'install', '-r', path.join(task.targetDir, 'requirements.txt')], 90)
+
+      await step(task, '校验导入', venvPython,
+        ['-c', 'import cv2, torch, paddle; print("torch", torch.__version__, "paddle", paddle.__version__, "cv2", cv2.__version__)'], 96)
+
+      task.modelsMissing = missingModels(task.targetDir)
+      try {
+        writeSettings({ vsrRoot: task.targetDir, pythonPath: venvPython })
+        pushLog(task, `已保存引擎路径：${task.targetDir}`)
+      } catch (error) {
+        pushLog(task, `保存设置失败（不影响使用，可手动保存）：${error && error.message ? error.message : error}`)
+      }
+      task.percent = 100
+      if (task.modelsMissing.length) {
+        task.ready = false
+        settle(task, 'done', `引擎已装好，但缺少模型文件：${task.modelsMissing.join('、')}。可从 video-subtitle-remover 的 Release 压缩包复制 backend/models，或把模型放进对应目录后点「重新检测」。`)
+      } else {
+        task.ready = true
+        settle(task, 'done', '引擎安装完成')
+      }
+    } catch (error) {
+      settle(task, 'failed', String(error && error.message ? error.message : error))
+    }
+  }
+
+  function publicTask(task) {
+    if (!task) return null
+    return {
+      id: task.id,
+      status: task.status,
+      stage: task.stage,
+      percent: task.percent,
+      message: task.message,
+      targetDir: task.targetDir,
+      venvPython: task.venvPython || '',
+      flavor: task.flavor,
+      ready: task.ready,
+      modelsMissing: task.modelsMissing,
+      startedAt: task.startedAt,
+      finishedAt: task.finishedAt,
+      logLines: task.log.length,
+      log: task.log.slice(-120),
+    }
+  }
+
+  function start(input) {
+    const body = input && typeof input === 'object' ? input : {}
+    const targetText = String(body.targetDir || '').trim()
+    if (!targetText) throw fail('请先选择安装目录', 400)
+    const targetDir = path.resolve(targetText)
+    const parent = path.dirname(targetDir)
+    if (!isDir(parent)) throw fail(`上级目录不存在：${parent}`, 400)
+    if (isDir(targetDir) && fs.readdirSync(targetDir).length) throw fail('目标目录不为空，请换一个空目录', 400)
+    if (activeId) {
+      const current = tasks.get(activeId)
+      if (current && current.status === 'running') throw fail('已有安装任务在执行，稍等它完成', 409)
+    }
+    const python = String(body.pythonPath || '').trim() || 'python'
+    const flavor = ['auto', 'cuda118', 'cpu'].includes(body.flavor) ? body.flavor : 'auto'
+
+    seq += 1
+    const task = {
+      id: `i${Date.now().toString(36)}${seq.toString(36)}`,
+      status: 'running',
+      stage: '准备',
+      percent: 0,
+      message: '准备安装…',
+      targetDir,
+      flavor,
+      python,
+      ready: false,
+      modelsMissing: [],
+      log: [],
+      child: null,
+      startedAt: Date.now(),
+      finishedAt: 0,
+    }
+    tasks.set(task.id, task)
+    activeId = task.id
+    pushLog(task, `开始安装引擎到 ${targetDir}`)
+    run(task)
+    return task
+  }
+
+  function cancel(id) {
+    const task = tasks.get(String(id || ''))
+    if (!task) throw fail('安装任务不存在', 404)
+    if (task.status !== 'running') return task
+    task.status = 'cancelled'
+    task.message = '已取消'
+    task.finishedAt = Date.now()
+    if (activeId === task.id) activeId = null
+    pushLog(task, '用户取消安装')
+    killTree(task.child)
+    task.child = null
+    return task
+  }
+
+  function get(id) { return tasks.get(String(id || '')) || null }
+  function active() { return activeId ? publicTask(tasks.get(activeId)) : null }
+  function dispose() { for (const task of tasks.values()) killTree(task.child); tasks.clear(); activeId = null }
+
+  return { start, cancel, get, active, publicTask, dispose }
+}
+
+// ---------------------------------------------------------------------------
 // Directory browsing
 // ---------------------------------------------------------------------------
 
@@ -1326,7 +1785,7 @@ function embedAllowed(req) {
   return site === 'same-origin' || site === 'none'
 }
 
-function createHandler(cfg, jobs, detects, models, originOf) {
+function createHandler(cfg, jobs, detects, installs, models, originOf) {
   let modelsLogged = false
   return async function handler(req, res) {
     const send = (code, body) => {
@@ -1355,6 +1814,7 @@ function createHandler(cfg, jobs, detects, models, originOf) {
             jobs: jobs.list(),
             active: jobs.active(),
             detect: { active: detects.active() },
+            install: installs.active(),
           })
         }
         if (route === '/jobs') return send(200, { jobs: jobs.list(), active: jobs.active() })
@@ -1381,6 +1841,13 @@ function createHandler(cfg, jobs, detects, models, originOf) {
           return
         }
         if (route === '/browse') return send(200, await browse(cfg, url.searchParams.get('path') || ''))
+        if (route === '/env/scan') return send(200, scanEngines(cfg))
+        const matchInstall = route.match(/^\/env\/install\/([^/]+)$/)
+        if (matchInstall) {
+          const task = installs.get(decodeURIComponent(matchInstall[1]))
+          if (!task) return send(404, { error: '安装任务不存在' })
+          return send(200, { task: installs.publicTask(task) })
+        }
         if (route === '/probe') return send(200, await probeVideo(cfg, url.searchParams.get('path') || ''))
         if (route === '/models') {
           const services = models()
@@ -1444,6 +1911,35 @@ function createHandler(cfg, jobs, detects, models, originOf) {
           const task = detects.start(body)
           return send(200, { task: publicDetect(task) })
         }
+        if (route === '/env/validate') {
+          return send(200, await validateEngineInput(body))
+        }
+        if (route === '/env/save') {
+          const checked = await validateEngineInput(body)
+          if (!checked.vsrOk) {
+            throw fail(`引擎目录不可用：${checked.problems.join('；') || '请选择包含 backend/main.py 的目录'}`, 400)
+          }
+          if (body.pythonPath && checked.pythonOk === false) {
+            throw fail(`Python 不可用：${checked.problems.join('；')}`, 400)
+          }
+          const patch = { vsrRoot: checked.vsrRoot }
+          if (checked.pythonPath) patch.pythonPath = checked.pythonPath
+          writeSettings(patch)
+          return send(200, { env: resolveEnv(cfg), saved: readSettings() })
+        }
+        if (route === '/env/reset') {
+          clearSettings()
+          return send(200, { env: resolveEnv(cfg), saved: readSettings() })
+        }
+        if (route === '/env/install') {
+          const task = installs.start(body)
+          return send(200, { task: installs.publicTask(task) })
+        }
+        const matchInstallCancel = route.match(/^\/env\/install\/([^/]+)\/cancel$/)
+        if (matchInstallCancel) {
+          const task = installs.cancel(decodeURIComponent(matchInstallCancel[1]))
+          return send(200, { task: installs.publicTask(task) })
+        }
         const matchDetectCancel = route.match(/^\/detect\/([^/]+)\/cancel$/)
         if (matchDetectCancel) {
           const task = detects.cancel(decodeURIComponent(matchDetectCancel[1]))
@@ -1474,10 +1970,12 @@ export function apply(ctx, config) {
 
   const jobs = createJobStore(cfg)
   const detects = createDetectStore(cfg, modelServices)
+  const installs = createInstallStore(cfg)
 
   ctx.effect(() => () => {
     jobs.dispose()
     detects.dispose()
+    installs.dispose()
   })
 
   if (typeof ctx.inject === 'function') {
@@ -1495,7 +1993,7 @@ export function apply(ctx, config) {
         () => sub.webServer.register({
           kind: 'prefix',
           path: API,
-          handler: createHandler(cfg, jobs, detects, modelServices, () => {
+          handler: createHandler(cfg, jobs, detects, installs, modelServices, () => {
             try { return sub.webServer.getOrigin() } catch { return '' }
           }),
         }),
@@ -1503,7 +2001,7 @@ export function apply(ctx, config) {
       )
       try {
         // One line makes the live state diagnosable from the Host log.
-        console.info('[dsh-subtitle-remover] api ready: /state /jobs /browse /probe /frame /models /detect /preview /open')
+        console.info('[dsh-subtitle-remover] api ready: /state /jobs /browse /probe /frame /models /detect /preview /open /env')
       } catch { /* logging is best effort */ }
     })
   }

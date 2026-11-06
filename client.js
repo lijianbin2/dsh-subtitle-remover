@@ -49,7 +49,45 @@ window.__ModuleLoader__.load({
         'env.vsr': '引擎',
         'env.python': '解释器',
         'env.probe': '探测',
-        'env.hint': '自动探测失败时，在插件配置里填 vsrRoot 或 pythonPath。',
+        'env.models': '缺模型',
+        'setup.open': '配置引擎',
+        'setup.close': '收起设置',
+        'setup.title': '引擎设置',
+        'setup.intro': '擦除要调用本机的 video-subtitle-remover 引擎。可以让插件自动找、手动指定目录，或直接在这里装一套。',
+        'setup.root': '引擎目录',
+        'setup.rootPlaceholder': '包含 backend/main.py 的目录',
+        'setup.python': 'Python 解释器',
+        'setup.pythonPlaceholder': '留空表示自动探测（找不到时用 python）',
+        'setup.save': '保存并检测',
+        'setup.saving': '检测中…',
+        'setup.reset': '恢复自动检测',
+        'setup.scan': '自动扫描',
+        'setup.scanning': '扫描中…',
+        'setup.scanEmpty': '没在常见位置找到引擎目录',
+        'setup.use': '用这个',
+        'setup.modelsMissing': '缺少模型：{list}',
+        'setup.valid': '引擎可用',
+        'setup.invalid': '引擎不可用',
+        'setup.installTitle': '一键安装引擎',
+        'setup.installTarget': '安装目录',
+        'setup.installFlavor': '运行环境',
+        'setup.flavorAuto': '自动（检测到 NVIDIA 显卡就用 CUDA）',
+        'setup.flavorCuda': 'CUDA 11.8（NVIDIA 显卡）',
+        'setup.flavorCpu': '仅 CPU',
+        'setup.installStart': '开始安装',
+        'setup.installRunning': '安装中 · {stage} · {p}%',
+        'setup.installCancel': '取消安装',
+        'setup.installHint': '会 clone 引擎并安装 PyTorch / PaddlePaddle（数 GB，可能十几分钟）。模型文件不在仓库里，装完会提示怎么补。',
+        'setup.installDone': '安装完成',
+        'setup.installFailed': '安装失败：{message}',
+        'setup.saved': '已保存引擎设置',
+        'setup.resetDone': '已恢复自动检测',
+        'setup.source': '来源：{source}',
+        'setup.source.settings': '手动指定',
+        'setup.source.config': '配置文件',
+        'setup.source.auto': '自动探测',
+        'setup.source.path': 'PATH',
+        'setup.log': '安装日志',
         'editor.title': '画面与字幕区域',
         'editor.hint': '在画面上拖拽框出一个区域；拖框内可移动，拖右下角可缩放。可以框多个。',
         'editor.emptyHint': '选好视频后这里会显示画面',
@@ -183,7 +221,45 @@ window.__ModuleLoader__.load({
         'env.vsr': 'Engine',
         'env.python': 'Python',
         'env.probe': 'Probe',
-        'env.hint': 'When detection fails, set vsrRoot or pythonPath in the plugin config.',
+        'env.models': 'No models',
+        'setup.open': 'Set up engine',
+        'setup.close': 'Hide settings',
+        'setup.title': 'Engine settings',
+        'setup.intro': 'Removal runs the local video-subtitle-remover engine. Let the plugin find it, point it at a folder, or install one right here.',
+        'setup.root': 'Engine folder',
+        'setup.rootPlaceholder': 'Folder containing backend/main.py',
+        'setup.python': 'Python interpreter',
+        'setup.pythonPlaceholder': 'Empty = auto-detect (falls back to python)',
+        'setup.save': 'Save and check',
+        'setup.saving': 'Checking…',
+        'setup.reset': 'Back to auto-detect',
+        'setup.scan': 'Scan',
+        'setup.scanning': 'Scanning…',
+        'setup.scanEmpty': 'No engine folder found in the usual places',
+        'setup.use': 'Use this',
+        'setup.modelsMissing': 'Missing models: {list}',
+        'setup.valid': 'Engine usable',
+        'setup.invalid': 'Engine unusable',
+        'setup.installTitle': 'Install the engine',
+        'setup.installTarget': 'Install into',
+        'setup.installFlavor': 'Runtime',
+        'setup.flavorAuto': 'Automatic (CUDA when an NVIDIA GPU is found)',
+        'setup.flavorCuda': 'CUDA 11.8 (NVIDIA)',
+        'setup.flavorCpu': 'CPU only',
+        'setup.installStart': 'Start install',
+        'setup.installRunning': 'Installing · {stage} · {p}%',
+        'setup.installCancel': 'Cancel install',
+        'setup.installHint': 'Clones the engine and installs PyTorch / PaddlePaddle (several GB, often 10+ minutes). Model files are not in the repository; the result tells you what to add.',
+        'setup.installDone': 'Install finished',
+        'setup.installFailed': 'Install failed: {message}',
+        'setup.saved': 'Engine settings saved',
+        'setup.resetDone': 'Back to auto-detection',
+        'setup.source': 'Source: {source}',
+        'setup.source.settings': 'chosen in the page',
+        'setup.source.config': 'config file',
+        'setup.source.auto': 'auto-detected',
+        'setup.source.path': 'PATH',
+        'setup.log': 'Install log',
         'editor.title': 'Frame and subtitle regions',
         'editor.hint': 'Drag on the frame to add a region; drag inside to move it, drag its bottom-right corner to resize. Several regions are allowed.',
         'editor.emptyHint': 'Pick a video and its frame appears here',
@@ -754,6 +830,242 @@ window.__ModuleLoader__.load({
     }
 
     // -----------------------------------------------------------------------
+    // Engine setup panel (manual picker, scan, guided install)
+    // -----------------------------------------------------------------------
+
+    function SetupPanel(props) {
+      const { t, env } = props
+      const [root, setRoot] = useState((env && env.vsrRoot) || '')
+      const [python, setPython] = useState(env && env.pythonSource === 'settings' ? env.pythonPath : '')
+      const [busy, setBusy] = useState(false)
+      const [message, setMessage] = useState(null)
+      const [scan, setScan] = useState(null)
+      const [scanning, setScanning] = useState(false)
+      const [targetDir, setTargetDir] = useState('')
+      const [flavor, setFlavor] = useState('auto')
+      const [installTask, setInstallTask] = useState(null)
+      const [installing, setInstalling] = useState(false)
+      const [picking, setPicking] = useState(false)
+
+      useEffect(() => {
+        if (!targetDir && scan && scan.suggestedTarget) setTargetDir(scan.suggestedTarget)
+      }, [scan, targetDir])
+
+      const save = async (nextRoot, nextPython) => {
+        setBusy(true)
+        setMessage(null)
+        try {
+          const payload = { vsrRoot: (nextRoot !== undefined ? nextRoot : root).trim() }
+          const py = (nextPython !== undefined ? nextPython : python).trim()
+          if (py) payload.pythonPath = py
+          const res = await api('/env/save', payload)
+          setMessage({ kind: 'ok', text: t('setup.saved') })
+          props.onRefresh(res.env)
+        } catch (error) {
+          setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const reset = async () => {
+        setBusy(true)
+        setMessage(null)
+        try {
+          const res = await api('/env/reset', {})
+          setMessage({ kind: 'ok', text: t('setup.resetDone') })
+          setRoot((res.env && res.env.vsrRoot) || '')
+          setPython('')
+          props.onRefresh(res.env)
+        } catch (error) {
+          setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const runScan = async () => {
+        setScanning(true)
+        setMessage(null)
+        try {
+          const res = await api('/env/scan')
+          setScan(res)
+          if (!res.found.length) setMessage({ kind: 'error', text: t('setup.scanEmpty') })
+        } catch (error) {
+          setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
+        } finally {
+          setScanning(false)
+        }
+      }
+
+      const startInstall = async () => {
+        if (!targetDir.trim()) {
+          setMessage({ kind: 'error', text: t('setup.installTarget') })
+          return
+        }
+        setInstalling(true)
+        setMessage(null)
+        try {
+          const started = await api('/env/install', {
+            targetDir: targetDir.trim(),
+            flavor,
+            pythonPath: python.trim() || undefined,
+          })
+          let task = started.task
+          setInstallTask(task)
+          while (task && task.status === 'running') {
+            await wait(2000)
+            const polled = await api(`/env/install/${encodeURIComponent(task.id)}`)
+            task = polled.task
+            setInstallTask(task)
+          }
+          if (task && task.status === 'done') {
+            setMessage({ kind: task.ready ? 'ok' : 'error', text: task.message || t('setup.installDone') })
+            setRoot(task.targetDir)
+            if (task.venvPython) setPython(task.venvPython)
+            props.onRefresh()
+          } else if (task && task.status !== 'cancelled') {
+            setMessage({ kind: 'error', text: t('setup.installFailed', { message: task.message || task.status }) })
+          }
+        } catch (error) {
+          setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
+        } finally {
+          setInstalling(false)
+        }
+      }
+
+      const cancelInstall = async () => {
+        if (!installTask || installTask.status !== 'running') return
+        try { await api(`/env/install/${encodeURIComponent(installTask.id)}/cancel`, {}) } catch { /* ignore */ }
+      }
+
+      const sourceKey = env && env.vsrSource ? `setup.source.${env.vsrSource}` : 'setup.source.auto'
+
+      return h('section', { className: 'vsr-card vsr-setup' },
+        h('div', { className: 'vsr-card-head' },
+          h('div', { className: 'vsr-card-title' }, t('setup.title')),
+          h('div', { className: 'vsr-card-tools' },
+            env && env.vsrRoot
+              ? h('span', { className: 'vsr-hint' }, t('setup.source', { source: t(sourceKey) }))
+              : null,
+            h('button', { type: 'button', className: 'vsr-btn small', onClick: props.onClose }, t('setup.close')),
+          ),
+        ),
+        h('div', { className: 'vsr-hint vsr-setup-intro' }, t('setup.intro')),
+
+        h('div', { className: 'vsr-setup-grid' },
+          h(Field, { label: t('setup.root') },
+            h('div', { className: 'vsr-row' },
+              h('input', {
+                className: 'vsr-input',
+                value: root,
+                spellCheck: false,
+                placeholder: t('setup.rootPlaceholder'),
+                onChange: (event) => setRoot(event.target.value),
+              }),
+              h('button', {
+                type: 'button',
+                className: 'vsr-btn',
+                onClick: () => setPicking(true),
+              }, t('form.browse')),
+            ),
+          ),
+          h(Field, { label: t('setup.python') },
+            h('input', {
+              className: 'vsr-input',
+              value: python,
+              spellCheck: false,
+              placeholder: t('setup.pythonPlaceholder'),
+              onChange: (event) => setPython(event.target.value),
+            }),
+          ),
+        ),
+
+        h('div', { className: 'vsr-setup-actions' },
+          h('button', {
+            type: 'button', className: 'vsr-btn primary', disabled: busy || !root.trim(),
+            onClick: () => { save() },
+          }, busy ? t('setup.saving') : t('setup.save')),
+          h('button', { type: 'button', className: 'vsr-btn', disabled: busy, onClick: reset }, t('setup.reset')),
+          h('button', { type: 'button', className: 'vsr-btn', disabled: scanning, onClick: runScan },
+            scanning ? t('setup.scanning') : t('setup.scan')),
+        ),
+
+        message ? h('div', { className: `vsr-notice ${message.kind}` }, message.text) : null,
+
+        scan && scan.found.length
+          ? h('div', { className: 'vsr-scan-list' },
+            scan.found.map((candidate) => h('div', { key: candidate.root, className: 'vsr-scan-item' },
+              h('code', { className: 'vsr-scan-path', title: candidate.root }, candidate.root),
+              candidate.modelsMissing && candidate.modelsMissing.length
+                ? h('span', { className: 'vsr-hint vsr-error' }, t('setup.modelsMissing', { list: candidate.modelsMissing.join('、') }))
+                : h('span', { className: 'vsr-hint' }, t('setup.valid')),
+              h('button', {
+                type: 'button', className: 'vsr-btn small',
+                onClick: () => { setRoot(candidate.root); save(candidate.root, python) },
+              }, t('setup.use')),
+              )))
+          : null,
+
+        h('div', { className: 'vsr-setup-install' },
+          h('div', { className: 'vsr-card-title' }, t('setup.installTitle')),
+          h('div', { className: 'vsr-hint' }, t('setup.installHint')),
+          h('div', { className: 'vsr-setup-grid' },
+            h(Field, { label: t('setup.installTarget') },
+              h('input', {
+                className: 'vsr-input',
+                value: targetDir,
+                spellCheck: false,
+                onChange: (event) => setTargetDir(event.target.value),
+              }),
+            ),
+            h(Field, { label: t('setup.installFlavor') },
+              h('select', {
+                className: 'vsr-select',
+                value: flavor,
+                onChange: (event) => setFlavor(event.target.value),
+              },
+              h('option', { value: 'auto' }, t('setup.flavorAuto')),
+              h('option', { value: 'cuda118' }, t('setup.flavorCuda')),
+              h('option', { value: 'cpu' }, t('setup.flavorCpu')),
+              ),
+            ),
+          ),
+          h('div', { className: 'vsr-setup-actions' },
+            installing
+              ? h('button', { type: 'button', className: 'vsr-btn danger', onClick: cancelInstall }, t('setup.installCancel'))
+              : h('button', {
+                type: 'button', className: 'vsr-btn', disabled: !targetDir.trim(), onClick: startInstall,
+              }, t('setup.installStart')),
+            installTask && installTask.status === 'running'
+              ? h('div', { className: 'vsr-install-progress' },
+                h('div', { className: 'vsr-progress' }, h('i', { style: { width: `${installTask.percent}%` } })),
+                h('span', { className: 'vsr-hint' }, t('setup.installRunning', {
+                  stage: installTask.stage || '',
+                  p: Math.round(installTask.percent || 0),
+                })))
+              : null,
+          ),
+          installTask && installTask.log && installTask.log.length
+            ? h('details', { className: 'vsr-log' },
+              h('summary', null, `${t('setup.log')}（${installTask.logLines} 行）`),
+              h('pre', null, installTask.log.join('\n')))
+            : null,
+        ),
+
+        picking
+          ? h(BrowseDialog, {
+            t,
+            mode: 'dir',
+            initialPath: root || '',
+            onCancel: () => setPicking(false),
+            onPick: (picked) => { setRoot(picked); setPicking(false) },
+          })
+          : null,
+      )
+    }
+
+    // -----------------------------------------------------------------------
     // Page
     // -----------------------------------------------------------------------
 
@@ -779,6 +1091,7 @@ window.__ModuleLoader__.load({
       const [frameTime, setFrameTime] = useState(0)
       const [viewSide, setViewSide] = useState('start')
       const [catalogue, setCatalogue] = useState(null)
+      const [setupOpen, setSetupOpen] = useState(false)
       const lastProbedPath = useRef('')
 
       useEffect(() => {
@@ -826,6 +1139,17 @@ window.__ModuleLoader__.load({
       const livePercent = detail && detail.status === 'running' ? detail.percent : 0
       useEffect(() => { publishActivity(running, livePercent) }, [running, livePercent])
       useEffect(() => () => publishActivity(false, 0), [])
+
+      // Open the setup panel once when the engine is missing; afterwards the button
+      // owns it so a user who closed the panel is not fought by polling.
+      const setupAutoOpened = useRef(false)
+      useEffect(() => {
+        if (setupAutoOpened.current) return
+        if (env && !env.jobReady) {
+          setupAutoOpened.current = true
+          setSetupOpen(true)
+        }
+      }, [env])
 
       // Probe the chosen file (debounced).
       useEffect(() => {
@@ -1092,7 +1416,8 @@ window.__ModuleLoader__.load({
 
       const shown = detail || null
       const envReady = env && env.ready
-      const envTone = !env ? 'idle' : envReady ? 'ok' : 'err'
+      const envJobReady = env && env.jobReady
+      const envTone = !env ? 'idle' : envJobReady ? 'ok' : envReady ? 'warn' : 'err'
       const modeOptions = MODES.map((mode) => ({ value: mode, label: t(MODE_LABEL_KEY[mode]) }))
       const modelList = catalogue && Array.isArray(catalogue.models) ? catalogue.models : []
       const followModelLabel = catalogue && catalogue.selected
@@ -1113,20 +1438,39 @@ window.__ModuleLoader__.load({
               h('p', { className: 'vsr-sub' }, t('page.subtitle')),
             ),
             h('div', { className: 'vsr-env' },
-              h('span', { className: 'vsr-chip' },
-                h('i', { className: `vsr-dot ${envTone}` }),
-                !env ? t('env.probe') : envReady ? t('env.ready') : t('env.broken')),
+              h('div', { className: 'vsr-env-actions' },
+                h('span', { className: 'vsr-chip' },
+                  h('i', { className: `vsr-dot ${envTone}` }),
+                  !env ? t('env.probe') : envJobReady ? t('env.ready') : envReady ? t('env.models') : t('env.broken')),
+                h('button', {
+                  type: 'button',
+                  className: 'vsr-btn small',
+                  onClick: () => setSetupOpen((open) => !open),
+                }, setupOpen ? t('setup.close') : t('setup.open')),
+              ),
               env && env.vsrRoot
                 ? h('div', { className: 'vsr-env-line', title: env.vsrRoot }, `${t('env.vsr')} · ${env.vsrRoot}`)
                 : null,
               env && env.pythonPath
                 ? h('div', { className: 'vsr-env-line', title: env.pythonPath }, `${t('env.python')} · ${env.pythonPath}`)
                 : null,
-              env && !envReady && env.problems && env.problems.length
-                ? h('div', { className: 'vsr-env-hint' }, env.problems.join('；'), h('div', { className: 'vsr-hint' }, t('env.hint')))
+              env && !envJobReady && env.problems && env.problems.length
+                ? h('div', { className: 'vsr-env-hint' }, env.problems.join('；'))
                 : null,
             ),
           ),
+
+          setupOpen
+            ? h(SetupPanel, {
+              t,
+              env,
+              onClose: () => setSetupOpen(false),
+              onRefresh: (nextEnv) => {
+                if (nextEnv) setEnv(nextEnv)
+                reload()
+              },
+            })
+            : null,
 
           notice ? h('div', { className: `vsr-notice ${notice.kind}` }, notice.text) : null,
           offline ? h('div', { className: 'vsr-notice error' }, t('notice.offline', { message: offline })) : null,
@@ -1396,7 +1740,7 @@ window.__ModuleLoader__.load({
               h('button', {
                 type: 'button',
                 className: 'vsr-btn primary block',
-                disabled: busy || running || detecting || !envReady || !form.videoPath.trim(),
+                disabled: busy || running || detecting || !envJobReady || !form.videoPath.trim(),
                 onClick: () => { startJob() },
               }, busy ? t('form.submitting') : running ? t('form.busy') : t('form.submit')),
             ),
@@ -1654,6 +1998,16 @@ window.__ModuleLoader__.load({
 .vsr-dot.err { background: var(--dsw-alias-state-error-primary); }
 .vsr-env-line { font-size: 11px; color: var(--dsw-alias-label-secondary); max-width: 56ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .vsr-env-hint { max-width: 52ch; text-align: right; font-size: 11px; color: var(--dsw-alias-state-warn-primary); line-height: 1.5; }
+.vsr-env-actions { display: flex; align-items: center; gap: 6px; }
+.vsr-setup { border-color: var(--dsw-alias-state-warn-primary); }
+.vsr-setup-intro { max-width: 90ch; margin-bottom: 12px; }
+.vsr-setup-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px 16px; }
+.vsr-setup-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.vsr-scan-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.vsr-scan-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-2); min-width: 0; }
+.vsr-scan-path { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; }
+.vsr-setup-install { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l1); display: flex; flex-direction: column; gap: 8px; }
+.vsr-install-progress { flex: 1 1 220px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .vsr-notice { padding: 8px 12px; border-radius: 9px; font-size: 12.5px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); }
 .vsr-notice.ok { border-color: var(--dsw-alias-state-success-primary); }
 .vsr-notice.error { border-color: var(--dsw-alias-state-error-primary); color: var(--dsw-alias-state-error-primary); }

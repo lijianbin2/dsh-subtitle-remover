@@ -13,12 +13,16 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { apply } from '../index.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ORIGIN = 'http://127.0.0.1:65441'
 const CLIP = path.join(HERE, 'fixtures', 'clip.mp4')
 const WORK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'vsr-host-api-'))
+// Isolate the saved engine settings so the test never touches the user's file.
+const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'vsr-home-'))
+process.env.DSH_HOME = TEST_HOME
+
+const { apply } = await import('../index.js')
 
 let route = null
 const disposers = []
@@ -127,6 +131,35 @@ async function main() {
   check('engine detected', Boolean(state.body.env && state.body.env.ready === true), JSON.stringify(state.body.env))
   check('python resolved', /python/i.test(state.body.env.pythonPath), state.body.env.pythonPath)
   check('jobs list is array', Array.isArray(state.body.jobs))
+
+  // Engine setup routes ----------------------------------------------------
+  const scan = await call('GET', '/dsh-subtitle-remover/api/env/scan')
+  check('scan 200', scan.status === 200)
+  check('scan finds the engine', Boolean(scan.body.found && scan.body.found.some((entry) => entry.root === state.body.env.vsrRoot)),
+    JSON.stringify((scan.body.found || []).map((entry) => entry.root)))
+  check('scan suggests a target', Boolean(scan.body.suggestedTarget), scan.body.suggestedTarget)
+
+  const badRoot = await call('POST', '/dsh-subtitle-remover/api/env/validate', { body: { vsrRoot: path.join(WORK_DIR, 'nope') } })
+  check('validate rejects a missing folder', badRoot.status === 200 && badRoot.body.vsrOk === false && badRoot.body.problems.length > 0,
+    JSON.stringify(badRoot.body.problems))
+
+  const goodRoot = await call('POST', '/dsh-subtitle-remover/api/env/validate', { body: { vsrRoot: state.body.env.vsrRoot } })
+  check('validate accepts the engine', goodRoot.body.vsrOk === true, JSON.stringify(goodRoot.body.modelsMissing))
+
+  const saved = await call('POST', '/dsh-subtitle-remover/api/env/save', {
+    body: { vsrRoot: state.body.env.vsrRoot, pythonPath: state.body.env.pythonPath },
+  })
+  check('save persists settings', saved.status === 200 && saved.body.env.vsrSource === 'settings' && saved.body.env.pythonSource === 'settings',
+    `${saved.body.env && saved.body.env.vsrSource}/${saved.body.env && saved.body.env.pythonSource}`)
+
+  const afterSave = await call('GET', '/dsh-subtitle-remover/api/state')
+  check('state reflects saved settings', afterSave.body.env.vsrSource === 'settings')
+
+  const reset = await call('POST', '/dsh-subtitle-remover/api/env/reset', { body: {} })
+  check('reset returns to auto-detect', reset.status === 200 && reset.body.env.vsrSource === 'auto', reset.body.env && reset.body.env.vsrSource)
+
+  const badInstall = await call('POST', '/dsh-subtitle-remover/api/env/install', { body: { targetDir: HERE } })
+  check('install refuses a non-empty target', badInstall.status === 400 && /不为空/.test(badInstall.body.error), `${badInstall.status} ${badInstall.body.error}`)
 
   // Browse -----------------------------------------------------------------
   const browse = await call('GET', `/dsh-subtitle-remover/api/browse?path=${encodeURIComponent(HERE)}`)
@@ -293,10 +326,12 @@ async function main() {
   }
   for (const dispose of disposers) { try { dispose() } catch { /* ignore */ } }
   try { fs.rmSync(WORK_DIR, { recursive: true, force: true }) } catch { /* ignore */ }
+  try { fs.rmSync(TEST_HOME, { recursive: true, force: true }) } catch { /* ignore */ }
 }
 
 main().catch((error) => {
   console.error('test crashed:', error)
   process.exitCode = 1
   try { fs.rmSync(WORK_DIR, { recursive: true, force: true }) } catch { /* ignore */ }
+  try { fs.rmSync(TEST_HOME, { recursive: true, force: true }) } catch { /* ignore */ }
 })

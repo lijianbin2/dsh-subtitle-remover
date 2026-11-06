@@ -72,8 +72,12 @@ metadata with the processing range, and the open-file actions.
     hook writes a throttled before/after JPEG pair, so the page shows the original
     and the cleaned frame side by side, frame number and percent included,
   - live progress, frames, elapsed/remaining, speed, output path + copy,
-  - **打开文件 / 所在文件夹** on a finished job (in the job card and in each history
-    row), plus the run log and a job history list.
+  - **open-file / show-in-folder** on a finished job, in the job card and in each
+    history row,
+  - **engine setup inside the page**: a scan of common locations, manual folder and
+    interpreter pickers (saved to the plugin, no profile editing), and a one-click
+    installer (clone + virtualenv + PyTorch/PaddlePaddle) for machines that don't
+    have the engine yet.
 
 ## How it talks to the engine
 
@@ -102,6 +106,26 @@ Harness webServer, same origin, loopback + same-origin checked):
 | `POST /jobs/<id>/open` | open the output file or its folder with the OS handler |
 | `GET /models` | DSH model catalogue plus the current DSH selection |
 | `POST /detect`, `GET /detect/<id>`, `POST /detect/<id>/cancel` | automatic region detection (optionally model-reviewed) |
+
+## Engine setup
+
+Precedence: the folder saved from the page, then the config below, then automatic
+detection.
+
+1. **Automatic** — the Host looks next to the plugin, in `~`, `~/Documents`,
+   `~/projects`, and the working directory for a checkout of
+   video-subtitle-remover with its virtualenv.
+2. **Manual** — open `配置引擎` in the page and pick the engine folder (and the
+   interpreter if it is somewhere unusual). The choice is stored in
+   `<DSH_HOME>/data/dsh-subtitle-remover/settings.json`, so it survives plugin
+   upgrades and needs no profile editing.
+3. **One-click install** — the same panel can clone the engine and prepare a
+   virtualenv with PyTorch / PaddlePaddle (`自动` picks CUDA when an NVIDIA GPU is
+   found, otherwise CPU). It needs `git` and Python 3.10+ on `PATH` and downloads
+   several GB. Model files are not in the engine repository: install the engine,
+   then copy `backend/models` from a video-subtitle-remover release archive (or an
+   existing install) into the cloned folder — the panel says exactly which files
+   are missing.
 
 ## Configuration
 
@@ -139,7 +163,8 @@ node test/cancel.test.mjs     # cancel a running job, partial output cleanup (~4
 ```
 
 `test/fixtures/` holds two tiny synthetic clips; they are test-only and not part
-of the shipped `files` list.
+of the shipped `files` list. `host-api.test.mjs` points `DSH_HOME` at a temp folder,
+so it never touches the engine settings of the machine that runs it.
 
 ## Notes
 
