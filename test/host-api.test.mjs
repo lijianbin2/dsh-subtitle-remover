@@ -166,6 +166,17 @@ async function main() {
   check('bare command name is not path-resolved', barePython.body.pythonPath === 'python' && barePython.body.pythonOk === true,
     `${barePython.body.pythonPath} ok=${barePython.body.pythonOk}`)
 
+  // A venv whose base interpreter disappeared must be reported clearly.
+  const fakeVenv = path.join(WORK_DIR, 'fakevenv')
+  fs.mkdirSync(path.join(fakeVenv, 'Scripts'), { recursive: true })
+  fs.writeFileSync(path.join(fakeVenv, 'Scripts', 'python.exe'), 'stub')
+  fs.writeFileSync(path.join(fakeVenv, 'pyvenv.cfg'), 'home = C:\\definitely-missing-python\nversion = 3.12.0\n')
+  const brokenVenv = await call('POST', '/dsh-subtitle-remover/api/env/validate', {
+    body: { pythonPath: path.join(fakeVenv, 'Scripts', 'python.exe') },
+  })
+  check('broken venv base is reported', (brokenVenv.body.problems || []).some((line) => /基础解释器/.test(line)),
+    JSON.stringify(brokenVenv.body.problems))
+
   check('state exposes install slots', Boolean(state.body.install && 'active' in state.body.install && 'last' in state.body.install))
 
   const reset = await call('POST', '/dsh-subtitle-remover/api/env/reset', { body: {} })
@@ -334,6 +345,14 @@ async function main() {
     await call('POST', `/dsh-subtitle-remover/api/jobs/${defaulted.body.job.id}/cancel`, { body: {} })
     await call('POST', `/dsh-subtitle-remover/api/jobs/${defaulted.body.job.id}/remove`, { body: {} })
   }
+
+  // Job detail log is opt-in -----------------------------------------------
+  const noLog = await call('GET', `/dsh-subtitle-remover/api/jobs/${jobId}?log=0`)
+  check('detail can omit the log', noLog.status === 200 && noLog.body.job.log === undefined && noLog.body.job.logLines > 0,
+    `logLines=${noLog.body.job && noLog.body.job.logLines}`)
+  const withLog = await call('GET', `/dsh-subtitle-remover/api/jobs/${jobId}?log=1`)
+  check('detail returns the log on demand', Array.isArray(withLog.body.job.log) && withLog.body.job.log.length > 0,
+    `${withLog.body.job && withLog.body.job.log && withLog.body.job.log.length} lines`)
 
   // Remove ----------------------------------------------------------------
   const removed = await call('POST', `/dsh-subtitle-remover/api/jobs/${jobId}/remove`, { body: {} })

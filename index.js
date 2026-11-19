@@ -124,8 +124,7 @@ const OPTIONAL_MODELS = [
   ['backend/models/propainter/ProPainter.pth', 'propainter'],
 ]
 
-function missingModels(root) {
-  if (!root) return REQUIRED_MODELS.map(([, name]) => name)
+function missingModels(root) {  if (!root) return REQUIRED_MODELS.map(([, name]) => name)
   return REQUIRED_MODELS
     .filter(([rel]) => !isFile(path.join(root, rel)))
     .map(([, name]) => name)
@@ -136,6 +135,26 @@ function optionalMissingModels(root) {
   return OPTIONAL_MODELS
     .filter(([rel]) => !isFile(path.join(root, rel)))
     .map(([, name]) => name)
+}
+
+/**
+ * A virtualenv stores the interpreter it was created from in `pyvenv.cfg`. When
+ * that base install disappears (machine rebuilt, Python replaced) every launch
+ * fails with "No Python at ...", so report it instead of a generic failure.
+ */
+function venvProblem(pythonPath) {
+  try {
+    const venvRoot = path.dirname(path.dirname(pythonPath))
+    const cfg = path.join(venvRoot, 'pyvenv.cfg')
+    if (!isFile(cfg)) return ''
+    const match = /^home\s*=\s*(.+)$/m.exec(fs.readFileSync(cfg, 'utf8'))
+    if (!match) return ''
+    const home = match[1].trim()
+    if (!home || isDir(home)) return ''
+    return `Python 环境的基础解释器丢失：${home}（venv 无法启动；可重装引擎或把它指向一个已安装的 Python 3.12）`
+  } catch {
+    return ''
+  }
 }
 
 /**
@@ -232,12 +251,14 @@ function resolveEnv(cfg) {
   const engineReady = Boolean(vsrRoot)
   const modelsMissing = missingModels(vsrRoot)
   const optionalModelsMissing = optionalMissingModels(vsrRoot)
+  const venvIssue = pythonPath === 'python' ? '' : venvProblem(pythonPath)
   const problems = []
   if (!engineReady) problems.push('找不到 video-subtitle-remover 目录（需要其中的 backend/main.py）')
   if (!runnerReady) problems.push('插件缺少 runner/vsr_runner.py 或 runner/vsr_detect.py')
   if (engineReady && modelsMissing.length) {
     problems.push(`引擎缺少模型文件：${modelsMissing.join('、')}（擦除会失败，检测仍可用）`)
   }
+  if (venvIssue) problems.push(venvIssue)
 
   return {
     vsrRoot,
@@ -245,6 +266,7 @@ function resolveEnv(cfg) {
     pythonPath,
     pythonSource,
     pythonFound: pythonPath === 'python' ? null : isFile(pythonPath),
+    pythonBroken: Boolean(venvIssue),
     ffmpegPath: ffmpeg.path,
     ffmpegFound: ffmpeg.found,
     ffprobePath: ffprobe.path,
@@ -256,8 +278,8 @@ function resolveEnv(cfg) {
     optionalModelsMissing,
     settingsFile: SETTINGS_FILE,
     suggestedTarget: path.join(HERE, 'engine', 'video-subtitle-remover'),
-    ready: engineReady && runnerReady && pythonPath !== '',
-    jobReady: engineReady && runnerReady && pythonPath !== '' && modelsMissing.length === 0,
+    ready: engineReady && runnerReady && pythonPath !== '' && !venvIssue,
+    jobReady: engineReady && runnerReady && pythonPath !== '' && !venvIssue && modelsMissing.length === 0,
     problems,
   }
 }
@@ -909,10 +931,10 @@ function createJobStore(cfg) {
     return [...jobs.values()].sort((a, b) => b.createdAt - a.createdAt).map((job) => publicJob(job, false))
   }
 
-  function detail(id) {
+  function detail(id, withLog = true) {
     const job = jobs.get(String(id || ''))
     if (!job) throw fail('任务不存在', 404)
-    return publicJob(job, true)
+    return publicJob(job, withLog)
   }
 
   function raw(id) {
@@ -1405,6 +1427,8 @@ async function validateEngineInput(input) {
     result.pythonOk = probe.ok
     result.pythonVersion = probe.version
     if (!probe.ok) result.problems.push(`Python 不可用：${probe.message}`)
+    const issue = venvProblem(py)
+    if (issue) result.problems.push(issue)
   }
 
   return result
@@ -1564,7 +1588,7 @@ function createInstallStore(cfg) {
     try {
       const flavor = await detectFlavor(task.flavor)
       task.flavor = flavor
-      pushLog(task, `安装模式：${flavor === 'cuda118' ? 'CUDA 11.8（NVIDIA）' : 'CPU'}，目标目录 ${task.targetDir}`)
+      pushLog(task, `安装模式：${flavor === 'cuda118' ? 'CUDA 11.8（NVIDIA）' : flavor === 'cuda126' ? 'CUDA 12.6（NVIDIA）' : 'CPU'}，目标目录 ${task.targetDir}`)
 
       await step(task, '克隆 video-subtitle-remover', 'git',
         ['clone', '--depth', '1', 'https://github.com/YaoFANGUK/video-subtitle-remover', task.targetDir], 10,
@@ -1579,16 +1603,21 @@ function createInstallStore(cfg) {
 
       await step(task, '升级 pip', venvPython, ['-m', 'pip', 'install', '-U', 'pip'], 26)
 
+      const cudaFlavor = flavor === 'cuda118' || flavor === 'cuda126'
       const torchIndex = flavor === 'cuda118'
         ? 'https://download.pytorch.org/whl/cu118'
-        : 'https://download.pytorch.org/whl/cpu'
+        : flavor === 'cuda126'
+          ? 'https://download.pytorch.org/whl/cu126'
+          : 'https://download.pytorch.org/whl/cpu'
       await step(task, '安装 PyTorch', venvPython,
         ['-m', 'pip', 'install', 'torch==2.7.0', 'torchvision==0.22.0', '--index-url', torchIndex], 55)
 
       const paddleIndex = flavor === 'cuda118'
         ? 'https://www.paddlepaddle.org.cn/packages/stable/cu118/'
-        : 'https://www.paddlepaddle.org.cn/packages/stable/cpu/'
-      const paddlePkg = flavor === 'cuda118' ? 'paddlepaddle-gpu==3.0.0' : 'paddlepaddle==3.0.0'
+        : flavor === 'cuda126'
+          ? 'https://www.paddlepaddle.org.cn/packages/stable/cu126/'
+          : 'https://www.paddlepaddle.org.cn/packages/stable/cpu/'
+      const paddlePkg = cudaFlavor ? 'paddlepaddle-gpu==3.0.0' : 'paddlepaddle==3.0.0'
       await step(task, '安装 PaddlePaddle', venvPython, ['-m', 'pip', 'install', paddlePkg, '-i', paddleIndex], 72)
 
       await step(task, '安装其余依赖', venvPython,
@@ -1665,7 +1694,7 @@ function createInstallStore(cfg) {
       if (current && current.status === 'running') throw fail('已有安装任务在执行，稍等它完成', 409)
     }
     const python = String(body.pythonPath || '').trim() || 'python'
-    const flavor = ['auto', 'cuda118', 'cpu'].includes(body.flavor) ? body.flavor : 'auto'
+    const flavor = ['auto', 'cuda118', 'cuda126', 'cpu'].includes(body.flavor) ? body.flavor : 'auto'
 
     seq += 1
     const task = {
@@ -1858,7 +1887,11 @@ function createHandler(cfg, jobs, detects, installs, models, originOf) {
         }
         if (route === '/jobs') return send(200, { jobs: jobs.list(), active: jobs.active() })
         const matchDetail = route.match(/^\/jobs\/([^/]+)$/)
-        if (matchDetail) return send(200, { job: jobs.detail(decodeURIComponent(matchDetail[1])) })
+        if (matchDetail) {
+          // The page polls without the log; it fetches it when the log is opened.
+          const withLog = url.searchParams.get('log') !== '0'
+          return send(200, { job: jobs.detail(decodeURIComponent(matchDetail[1]), withLog) })
+        }
         const matchPreview = route.match(/^\/jobs\/([^/]+)\/preview\/(left|right)$/)
         if (matchPreview) {
           if (!embedAllowed(req)) return send(403, { error: 'forbidden' })

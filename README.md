@@ -121,13 +121,14 @@ detection.
    `<DSH_HOME>/data/dsh-subtitle-remover/settings.json`, so it survives plugin
    upgrades and needs no profile editing.
 3. **One-click install** — the same panel can clone the engine and prepare a
-   virtualenv with PyTorch / PaddlePaddle (`自动` picks CUDA when an NVIDIA GPU is
-   found, otherwise CPU). The target defaults to `engine/video-subtitle-remover`
-   inside the plugin folder and is editable/pickable. It needs `git` and Python
-   3.10+ on `PATH` and downloads several GB. Model files are not in the engine
-   repository: install the engine, then copy `backend/models` from a
-   video-subtitle-remover release archive (or an existing install) into the cloned
-   folder — the panel says exactly which files are missing.
+   virtualenv with PyTorch / PaddlePaddle (`自动` picks CUDA 11.8 when an NVIDIA GPU
+   is found, otherwise CPU; CUDA 12.6 is available for newer cards). The target
+   defaults to `engine/video-subtitle-remover` inside the plugin folder and is
+   editable/pickable. It needs `git` and Python 3.10+ on `PATH` and downloads
+   several GB. Model files are not in the engine repository: install the engine,
+   then copy `backend/models` from a video-subtitle-remover release archive (or an
+   existing install) into the cloned folder — the panel says exactly which files
+   are missing.
 
 ## Configuration
 

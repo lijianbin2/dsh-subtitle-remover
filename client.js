@@ -73,6 +73,7 @@ window.__ModuleLoader__.load({
         'setup.installFlavor': '运行环境',
         'setup.flavorAuto': '自动（检测到 NVIDIA 显卡就用 CUDA）',
         'setup.flavorCuda': 'CUDA 11.8（NVIDIA 显卡）',
+        'setup.flavorCuda126': 'CUDA 12.6（较新的 NVIDIA 显卡）',
         'setup.flavorCpu': '仅 CPU',
         'setup.installStart': '开始安装',
         'setup.installRunning': '安装中 · {stage} · {p}%',
@@ -175,6 +176,7 @@ window.__ModuleLoader__.load({
         'job.remove': '删除记录',
         'job.log': '运行日志（{n} 行）',
         'job.logEmpty': '暂无日志',
+        'job.logLoading': '展开后加载日志…',
         'job.mode': '算法',
         'job.area': '区域',
         'job.areaValue': '{n} 个',
@@ -245,6 +247,7 @@ window.__ModuleLoader__.load({
         'setup.installFlavor': 'Runtime',
         'setup.flavorAuto': 'Automatic (CUDA when an NVIDIA GPU is found)',
         'setup.flavorCuda': 'CUDA 11.8 (NVIDIA)',
+        'setup.flavorCuda126': 'CUDA 12.6 (newer NVIDIA cards)',
         'setup.flavorCpu': 'CPU only',
         'setup.installStart': 'Start install',
         'setup.installRunning': 'Installing · {stage} · {p}%',
@@ -347,6 +350,7 @@ window.__ModuleLoader__.load({
         'job.remove': 'Remove record',
         'job.log': 'Run log ({n} lines)',
         'job.logEmpty': 'No log yet',
+        'job.logLoading': 'Open to load the log…',
         'job.mode': 'Model',
         'job.area': 'Regions',
         'job.areaValue': '{n}',
@@ -1040,9 +1044,12 @@ window.__ModuleLoader__.load({
               )))
           : null,
 
-        h('div', { className: 'vsr-setup-install' },
-          h('div', { className: 'vsr-card-title' }, t('setup.installTitle')),
-          h('div', { className: 'vsr-hint' }, t('setup.installHint')),
+        h('details', {
+          className: 'vsr-setup-install',
+          open: !(env && env.jobReady),
+        },
+        h('summary', { className: 'vsr-card-title' }, t('setup.installTitle')),
+        h('div', { className: 'vsr-hint' }, t('setup.installHint')),
           h('div', { className: 'vsr-setup-grid' },
             h(Field, { label: t('setup.installTarget') },
               h('div', { className: 'vsr-row' },
@@ -1063,6 +1070,7 @@ window.__ModuleLoader__.load({
               },
               h('option', { value: 'auto' }, t('setup.flavorAuto')),
               h('option', { value: 'cuda118' }, t('setup.flavorCuda')),
+              h('option', { value: 'cuda126' }, t('setup.flavorCuda126')),
               h('option', { value: 'cpu' }, t('setup.flavorCpu')),
               ),
             ),
@@ -1116,6 +1124,8 @@ window.__ModuleLoader__.load({
       const [jobs, setJobs] = useState([])
       const [active, setActive] = useState('')
       const [detail, setDetail] = useState(null)
+      const [jobLogs, setJobLogs] = useState({})
+      const jobLogsRef = useRef({})
       const [offline, setOffline] = useState('')
       const [notice, setNotice] = useState(null)
       const [busy, setBusy] = useState(false)
@@ -1151,6 +1161,7 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         let stopped = false
         let timer = null
+        let busy = false
         const tick = async () => {
           try {
             const state = await api('/state')
@@ -1160,9 +1171,11 @@ window.__ModuleLoader__.load({
             setActive(state.active || '')
             setInstallState(state.install || null)
             setOffline('')
+            busy = Boolean(state.active) || Boolean(state.detect && state.detect.active) || Boolean(state.install && state.install.active)
             const watch = selectedId || state.active || (state.jobs && state.jobs[0] ? state.jobs[0].id : '')
             if (watch) {
-              const picked = await api(`/jobs/${encodeURIComponent(watch)}`)
+              // `log=0` keeps the poll small; the log is fetched when opened.
+              const picked = await api(`/jobs/${encodeURIComponent(watch)}?log=0`)
               if (!stopped) setDetail(picked.job || null)
             } else if (!stopped) {
               setDetail(null)
@@ -1170,7 +1183,8 @@ window.__ModuleLoader__.load({
           } catch (e) {
             if (!stopped) setOffline(String(e && e.message ? e.message : e))
           } finally {
-            if (!stopped) timer = setTimeout(tick, 1500)
+            // Poll fast only while something is actually running.
+            if (!stopped) timer = setTimeout(tick, busy ? 1500 : 5000)
           }
         }
         tick()
@@ -1438,6 +1452,19 @@ window.__ModuleLoader__.load({
           setNotice({ kind: 'error', text: String(e && e.message ? e.message : e) })
         }
       }
+
+      // The log is big and usually collapsed, so it is fetched only when opened.
+      const loadLog = useCallback(async (id) => {
+        if (!id || jobLogsRef.current[id]) return
+        jobLogsRef.current[id] = []
+        try {
+          const res = await api(`/jobs/${encodeURIComponent(id)}?log=1`)
+          jobLogsRef.current[id] = (res.job && res.job.log) || []
+          setJobLogs(Object.assign({}, jobLogsRef.current))
+        } catch {
+          delete jobLogsRef.current[id]
+        }
+      }, [])
 
       const copyPath = async (value) => {
         try {
@@ -1797,7 +1824,16 @@ window.__ModuleLoader__.load({
                 shown ? h(StatusBadge, { job: shown, t }) : null,
               ),
               shown
-                ? h(JobBody, { job: shown, t, onCancel: cancelJob, onRemove: removeJob, onCopy: copyPath, onOpen: openOutput })
+                ? h(JobBody, {
+                  job: shown,
+                  log: jobLogs[shown.id] || null,
+                  onOpenLog: loadLog,
+                  t,
+                  onCancel: cancelJob,
+                  onRemove: removeJob,
+                  onCopy: copyPath,
+                  onOpen: openOutput,
+                })
                 : h('div', { className: 'vsr-empty' },
                   h('div', { className: 'vsr-empty-title' }, t('job.empty')),
                   h('div', { className: 'vsr-hint' }, t('job.emptyHint'))),
@@ -1953,11 +1989,16 @@ window.__ModuleLoader__.load({
             ? h('button', { type: 'button', className: 'vsr-btn danger', onClick: () => onCancel(job.id) }, t('job.cancel'))
             : h('button', { type: 'button', className: 'vsr-btn', onClick: () => onRemove(job.id) }, t('job.remove')),
         ),
-        h('details', { className: 'vsr-log' },
-          h('summary', null, t('job.log', { n: job.logLines || (job.log ? job.log.length : 0) })),
-          job.log && job.log.length
-            ? h('pre', null, job.log.join('\n'))
-            : h('div', { className: 'vsr-hint' }, t('job.logEmpty')),
+        h('details', {
+          className: 'vsr-log',
+          onToggle: (event) => { if (event.currentTarget.open) props.onOpenLog(job.id) },
+        },
+        h('summary', null, t('job.log', { n: job.logLines || 0 })),
+        Array.isArray(props.log)
+          ? (props.log.length
+            ? h('pre', null, props.log.join('\n'))
+            : h('div', { className: 'vsr-hint' }, t('job.logEmpty')))
+          : h('div', { className: 'vsr-hint' }, t('job.logLoading')),
         ),
       )
     }
@@ -2050,6 +2091,8 @@ window.__ModuleLoader__.load({
 .vsr-scan-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-2); min-width: 0; }
 .vsr-scan-path { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; }
 .vsr-setup-install { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l1); display: flex; flex-direction: column; gap: 8px; }
+.vsr-setup-install > summary { cursor: pointer; }
+.vsr-setup-install > summary:hover { color: var(--dsw-alias-label-primary); }
 .vsr-install-progress { flex: 1 1 220px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .vsr-notice { padding: 8px 12px; border-radius: 9px; font-size: 12.5px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); }
 .vsr-notice.ok { border-color: var(--dsw-alias-state-success-primary); }
