@@ -177,6 +177,10 @@ first (`<workspace>/vsr`, `<workspace>/vsr-env/Scripts/python.exe`).
 - All three are on by default and can be switched off with the config keys above.
   Engine updates follow video-subtitle-remover's `main`, so a pinned setup that
   depends on a specific build should set `autoUpdateEngine: false`.
+- **Self-healing** — a virtualenv whose base interpreter disappeared is repaired
+  automatically when the page loads (the portable `engine/python312` is provisioned
+  when the machine has no Python 3.12); success and failure both surface as a notice,
+  and a failed rewrite is rolled back.
 
 ## Requirements
 

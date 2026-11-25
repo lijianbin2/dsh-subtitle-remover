@@ -193,6 +193,11 @@ window.__ModuleLoader__.load({
         'job.previewWaiting': '开始处理后会在这里实时对比',
         'job.previewFrame': '第 {n} 帧 · {p}%',
         'notice.openFailed': '打开失败：{message}',
+        'notice.repairing': '检测到 Python 环境损坏，正在自动修复…',
+        'notice.repaired': 'Python 环境已自动修复',
+        'notice.repairFailed': 'Python 环境自动修复失败：{message}',
+        'notice.pluginUpdated': '插件已自动更新到最新版本，刷新页面后生效',
+        'notice.engineUpdated': '引擎已自动更新',
         'job.outputMissing': '输出文件已不在原处',
         'job.copy': '复制路径',
         'job.copied': '路径已复制',
@@ -391,6 +396,11 @@ window.__ModuleLoader__.load({
         'job.previewWaiting': 'The comparison appears here once processing starts',
         'job.previewFrame': 'frame {n} · {p}%',
         'notice.openFailed': 'Could not open: {message}',
+        'notice.repairing': 'The Python environment is broken; repairing it automatically…',
+        'notice.repaired': 'Python environment repaired automatically',
+        'notice.repairFailed': 'Automatic Python repair failed: {message}',
+        'notice.pluginUpdated': 'Plugin updated automatically; refresh the page to load it',
+        'notice.engineUpdated': 'Engine updated automatically',
         'job.outputMissing': 'The output file is gone',
         'job.copy': 'Copy path',
         'job.copied': 'Path copied',
@@ -1343,6 +1353,44 @@ window.__ModuleLoader__.load({
       const livePercent = detail && detail.status === 'running' ? detail.percent : 0
       useEffect(() => { publishActivity(running, livePercent) }, [running, livePercent])
       useEffect(() => () => publishActivity(false, 0), [])
+
+      // Self-heal a broken virtualenv without waiting for a click.
+      const autoRepairTried = useRef(false)
+      useEffect(() => {
+        if (!env || !env.pythonBroken || autoRepairTried.current) return
+        autoRepairTried.current = true
+        setNotice({ kind: 'ok', text: t('notice.repairing') })
+        const run = async () => {
+          try {
+            const res = await api('/env/repair', { pythonPath: env.pythonPath })
+            setNotice({
+              kind: res.ok ? 'ok' : 'error',
+              text: res.ok ? t('notice.repaired') : t('notice.repairFailed', { message: res.message || '' }),
+            })
+            reload()
+          } catch {
+            autoRepairTried.current = false
+          }
+        }
+        run()
+      }, [env])
+
+      // Announce an update the maintenance task performed on its own.
+      const announcedUpdate = useRef('')
+      useEffect(() => {
+        if (!updateState) return
+        for (const target of ['plugin', 'engine']) {
+          const node = updateState[target]
+          if (!node || node.status !== 'updated') continue
+          const key = `${target}:${node.lastCheck}`
+          if (announcedUpdate.current === key) continue
+          announcedUpdate.current = key
+          setNotice({
+            kind: 'ok',
+            text: t(target === 'plugin' ? 'notice.pluginUpdated' : 'notice.engineUpdated'),
+          })
+        }
+      }, [updateState])
 
       // Open the setup panel once when the engine is missing; afterwards the button
       // owns it so a user who closed the panel is not fought by polling.
