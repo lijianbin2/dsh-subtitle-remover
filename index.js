@@ -2061,7 +2061,13 @@ function createUpdater(cfg, activity) {
   const busy = () => {
     try { return Boolean(activity && activity.busy()) } catch { return false }
   }
-  const git = (root, args, timeoutMs = 60000) => captureCommand(gitBinary(), ['-C', root, ...args], timeoutMs)
+  const git = (root, args, timeoutMs = 60000) => captureCommand(
+    gitBinary(),
+    // Pass safe.directory per call: the checkouts often belong to another Windows
+    // account (copied drives, rebuilt machines) and git would otherwise refuse.
+    ['-c', `safe.directory=${root}`, '-C', root, ...args],
+    timeoutMs,
+  )
 
   async function inspect(target, root, auto) {
     if (!root) {
@@ -2152,12 +2158,26 @@ function createUpdater(cfg, activity) {
       const env = resolveEnv(cfg)
       const result = await inspect(state.engine, env.vsrRoot, cfg.autoUpdateEngine)
       if (result.updated && result.before && result.after && env.vsrRoot) {
+        // A pulled engine must still import and still expose backend/main.py;
+        // otherwise go back to the commit that worked.
+        const sane = isFile(path.join(env.vsrRoot, 'backend', 'main.py'))
+          ? await captureCommand(env.pythonPath, ['-c', 'import cv2, torch, paddle'], 300000)
+          : { ok: false, message: '更新后找不到 backend/main.py' }
+        if (!sane.ok) {
+          await git(env.vsrRoot, ['reset', '--hard', result.before], 120000)
+          state.engine.status = 'rolled-back'
+          state.engine.message = `更新后校验失败，已回滚：${sane.message || sane.output}`.slice(0, 300)
+          return state.engine
+        }
         const diff = await git(env.vsrRoot, ['diff', '--name-only', result.before, result.after], 30000)
         if (diff.ok && /(^|\n)requirements\.txt/.test(diff.output)) {
           state.engine.status = 'installing'
           const pip = await captureCommand(env.pythonPath, ['-m', 'pip', 'install', '-r', path.join(env.vsrRoot, 'requirements.txt')], 900000)
           state.engine.status = pip.ok ? 'updated' : 'pip-failed'
           state.engine.message = pip.ok ? '引擎代码和依赖已更新' : `依赖更新失败：${pip.message}`
+        } else {
+          state.engine.status = 'updated'
+          state.engine.message = '引擎代码已更新'
         }
       }
       return state.engine
