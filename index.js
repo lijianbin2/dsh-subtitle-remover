@@ -2138,6 +2138,7 @@ function createUpdater(cfg, activity) {
     try {
       // Pulling our own checkout makes DSH hot-reload the plugin.
       await inspect(state.plugin, HERE, cfg.autoUpdate)
+      try { console.info(`[dsh-subtitle-remover] update: plugin ${state.plugin.status}${state.plugin.behind ? ` behind ${state.plugin.behind}` : ''}`) } catch { /* best effort */ }
       return state.plugin
     } finally {
       pluginRunning = false
@@ -2162,6 +2163,7 @@ function createUpdater(cfg, activity) {
       return state.engine
     } finally {
       engineRunning = false
+      try { console.info(`[dsh-subtitle-remover] update: engine ${state.engine.status}${state.engine.behind ? ` behind ${state.engine.behind}` : ''}`) } catch { /* best effort */ }
     }
   }
 
