@@ -106,6 +106,7 @@ window.__ModuleLoader__.load({
         'setup.updateStatus.pip-failed': '依赖更新失败',
         'setup.updateStatus.missing': '未找到',
         'setup.updateStatus.error': '出错',
+        'update.pluginBehind': '插件有 {n} 个更新',
         'setup.source': '来源：{source}',
         'setup.source.settings': '手动指定',
         'setup.source.config': '配置文件',
@@ -303,6 +304,7 @@ window.__ModuleLoader__.load({
         'setup.updateStatus.pip-failed': 'dependency update failed',
         'setup.updateStatus.missing': 'not found',
         'setup.updateStatus.error': 'error',
+        'update.pluginBehind': '{n} plugin update(s)',
         'setup.source': 'Source: {source}',
         'setup.source.settings': 'chosen in the page',
         'setup.source.config': 'config file',
@@ -1662,6 +1664,13 @@ window.__ModuleLoader__.load({
                   className: 'vsr-btn small',
                   onClick: () => setSetupOpen((open) => !open),
                 }, setupOpen ? t('setup.close') : t('setup.open')),
+                updateState && updateState.plugin && updateState.plugin.behind > 0
+                  ? h('button', {
+                    type: 'button',
+                    className: 'vsr-btn small',
+                    onClick: () => setSetupOpen(true),
+                  }, t('update.pluginBehind', { n: updateState.plugin.behind }))
+                  : null,
               ),
               env && env.vsrRoot
                 ? h('div', { className: 'vsr-env-line', title: env.vsrRoot }, `${t('env.vsr')} · ${env.vsrRoot}`)

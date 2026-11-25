@@ -2166,10 +2166,10 @@ function createUpdater(cfg, activity) {
   }
 
   function start() {
-    // Wait ten minutes so a fresh start never competes with a first job.
-    const first = 10 * 60 * 1000
+    // Check soon after start (idle-guarded), then on a slow schedule.
+    const first = 60 * 1000
     timers.push(setTimeout(() => { if (!disposed) checkPlugin() }, first))
-    timers.push(setTimeout(() => { if (!disposed) checkEngine() }, first + 5 * 60 * 1000))
+    timers.push(setTimeout(() => { if (!disposed) checkEngine() }, first + 4 * 60 * 1000))
     timers.push(setInterval(() => { if (!disposed) checkPlugin() }, 6 * 60 * 60 * 1000))
     timers.push(setInterval(() => { if (!disposed) checkEngine() }, 24 * 60 * 60 * 1000))
     for (const timer of timers) if (timer.unref) timer.unref()
