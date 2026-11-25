@@ -1,6 +1,6 @@
 {
   "name": "dsh-subtitle-remover",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "type": "module",
   "description": "Left-sidebar page in the DSH Web UI that removes burned-in subtitles from videos with the local video-subtitle-remover engine.",
@@ -40,4 +40,5 @@
     }
   }
 }
+
 

@@ -83,6 +83,11 @@ window.__ModuleLoader__.load({
         'setup.installFailed': '安装失败：{message}',
         'setup.saved': '已保存引擎设置',
         'setup.resetDone': '已恢复自动检测',
+        'setup.repair': '修复 Python 环境',
+        'setup.repairing': '修复中…',
+        'setup.repairOk': '已修复：{message}',
+        'setup.repairFailed': '修复失败：{message}',
+        'setup.repairHint': '虚拟环境的基础解释器丢失了。插件会尝试把它指向本机已安装的 Python 3.12，并验证依赖能否导入。',
         'setup.source': '来源：{source}',
         'setup.source.settings': '手动指定',
         'setup.source.config': '配置文件',
@@ -257,6 +262,11 @@ window.__ModuleLoader__.load({
         'setup.installFailed': 'Install failed: {message}',
         'setup.saved': 'Engine settings saved',
         'setup.resetDone': 'Back to auto-detection',
+        'setup.repair': 'Repair Python environment',
+        'setup.repairing': 'Repairing…',
+        'setup.repairOk': 'Repaired: {message}',
+        'setup.repairFailed': 'Repair failed: {message}',
+        'setup.repairHint': 'The virtualenv lost the interpreter it was created from. The plugin will repoint it at an installed Python 3.12 and verify the imports.',
         'setup.source': 'Source: {source}',
         'setup.source.settings': 'chosen in the page',
         'setup.source.config': 'config file',
@@ -850,6 +860,7 @@ window.__ModuleLoader__.load({
       const [installTask, setInstallTask] = useState(null)
       const [installing, setInstalling] = useState(false)
       const [picking, setPicking] = useState(null)
+      const [repairing, setRepairing] = useState(false)
       const localInstalls = useRef(new Set())
       const announcedInstall = useRef('')
 
@@ -917,6 +928,26 @@ window.__ModuleLoader__.load({
           setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
         } finally {
           setBusy(false)
+        }
+      }
+
+      // Repoint a venv whose base interpreter disappeared; the host verifies the
+      // imports before it keeps the change.
+      const repair = async () => {
+        setRepairing(true)
+        setMessage(null)
+        try {
+          const payload = {}
+          const target = (env && env.pythonPath) || python.trim()
+          if (target) payload.pythonPath = target
+          const res = await api('/env/repair', payload)
+          if (res.ok) setMessage({ kind: 'ok', text: t('setup.repairOk', { message: res.message || '' }) })
+          else setMessage({ kind: 'error', text: t('setup.repairFailed', { message: res.message || '' }) })
+          props.onRefresh(res.env)
+        } catch (error) {
+          setMessage({ kind: 'error', text: t('setup.repairFailed', { message: String(error && error.message ? error.message : error) }) })
+        } finally {
+          setRepairing(false)
         }
       }
 
@@ -1026,7 +1057,15 @@ window.__ModuleLoader__.load({
           h('button', { type: 'button', className: 'vsr-btn', disabled: busy, onClick: reset }, t('setup.reset')),
           h('button', { type: 'button', className: 'vsr-btn', disabled: scanning, onClick: runScan },
             scanning ? t('setup.scanning') : t('setup.scan')),
+          env && env.pythonBroken
+            ? h('button', { type: 'button', className: 'vsr-btn', disabled: repairing, onClick: repair },
+              repairing ? t('setup.repairing') : t('setup.repair'))
+            : null,
         ),
+
+        env && env.pythonBroken
+          ? h('div', { className: 'vsr-hint vsr-error' }, t('setup.repairHint'))
+          : null,
 
         message ? h('div', { className: `vsr-notice ${message.kind}` }, message.text) : null,
 

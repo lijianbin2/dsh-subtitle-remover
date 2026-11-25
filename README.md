@@ -129,6 +129,11 @@ detection.
    then copy `backend/models` from a video-subtitle-remover release archive (or an
    existing install) into the cloned folder — the panel says exactly which files
    are missing.
+4. **Repair** — a virtualenv breaks whenever the Python it was created from
+   disappears (machine rebuilt, Python replaced). The panel reports the missing base
+   interpreter and offers `修复 Python 环境`: it repoints `pyvenv.cfg` at an installed
+   Python 3.12, verifies that `cv2`, `torch` and `paddle` still import, and rolls the
+   file back if they do not.
 
 ## Configuration
 

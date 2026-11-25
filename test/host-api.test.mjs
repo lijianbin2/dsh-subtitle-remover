@@ -177,6 +177,17 @@ async function main() {
   check('broken venv base is reported', (brokenVenv.body.problems || []).some((line) => /基础解释器/.test(line)),
     JSON.stringify(brokenVenv.body.problems))
 
+  // Repair: a stub venv cannot work, so the rewrite must be rolled back.
+  const repaired = await call('POST', '/dsh-subtitle-remover/api/env/repair', {
+    body: { pythonPath: path.join(fakeVenv, 'Scripts', 'python.exe') },
+  })
+  check('repair fails cleanly for a stub venv', repaired.status === 200 && repaired.body.ok === false, JSON.stringify(repaired.body).slice(0, 200))
+  const restoredCfg = fs.readFileSync(path.join(fakeVenv, 'pyvenv.cfg'), 'utf8')
+  check('repair rolls pyvenv.cfg back', /definitely-missing-python/.test(restoredCfg))
+
+  const notVenv = await call('POST', '/dsh-subtitle-remover/api/env/repair', { body: { pythonPath: process.execPath } })
+  check('repair rejects a non-venv interpreter', notVenv.status === 400, `${notVenv.status} ${notVenv.body.error}`)
+
   check('state exposes install slots', Boolean(state.body.install && 'active' in state.body.install && 'last' in state.body.install))
 
   const reset = await call('POST', '/dsh-subtitle-remover/api/env/reset', { body: {} })

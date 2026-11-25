@@ -1386,6 +1386,130 @@ function probePython(pythonPath, timeoutMs = 15000) {
   })
 }
 
+function captureCommand(command, args, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    let child = null
+    try {
+      child = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (error) {
+      resolve({ ok: false, output: '', message: String(error && error.message ? error.message : error) })
+      return
+    }
+    let out = ''
+    let err = ''
+    let done = false
+    const finish = (value) => {
+      if (done) return
+      done = true
+      resolve(value)
+    }
+    const timer = setTimeout(() => {
+      killTree(child)
+      finish({ ok: false, output: out, message: '超时' })
+    }, timeoutMs)
+    if (timer.unref) timer.unref()
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => { out += chunk })
+    child.stderr.on('data', (chunk) => { err += chunk })
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      finish({ ok: false, output: out, message: String(error && error.message ? error.message : error) })
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      finish({ ok: code === 0, output: out, message: code === 0 ? '' : (err.trim().slice(-200) || `退出码 ${code}`) })
+    })
+  })
+}
+
+/** Candidate base interpreters that could back a cp312 virtualenv. */
+async function findCandidatePythons() {
+  const list = []
+  const add = (value) => {
+    const text = String(value || '').trim()
+    if (text && /python(3\.12)?\.exe$/i.test(text) && !list.includes(text)) list.push(text)
+  }
+  const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
+  const roaming = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming')
+  add(path.join(local, 'Programs', 'Python', 'Python312', 'python.exe'))
+  add('C:\\Program Files\\Python312\\python.exe')
+  add('C:\\Python312\\python.exe')
+  try {
+    for (const name of fs.readdirSync(path.join(roaming, 'uv', 'python'))) {
+      if (/cpython-3\.12/i.test(name)) add(path.join(roaming, 'uv', 'python', name, 'python.exe'))
+    }
+  } catch { /* no uv installs */ }
+
+  const byPy = await captureCommand('py', ['-0p'], 5000)
+  if (byPy.ok) {
+    for (const line of byPy.output.split(/\r?\n/)) {
+      const match = /([A-Za-z]:\\[^\r\n]*?python\.exe)/i.exec(line)
+      if (match && /3\.12/.test(line)) add(match[1])
+    }
+  }
+  const byWhere = await captureCommand('where', ['python'], 5000)
+  if (byWhere.ok) for (const line of byWhere.output.split(/\r?\n/)) add(line)
+  return list
+}
+
+/** Run the venv interpreter far enough to prove the environment really works. */
+async function probeImports(pythonPath) {
+  const result = await captureCommand(pythonPath, ['-c', 'import cv2, torch, paddle; print("ok")'], 120000)
+  return { ok: result.ok, message: result.ok ? '' : result.message, output: result.output.trim() }
+}
+
+/**
+ * A venv breaks whenever the base interpreter it was created from disappears
+ * (machine rebuilt, Python replaced). Repoint pyvenv.cfg at a Python 3.12 that
+ * exists and verify the packages still import; roll back on any failure.
+ */
+async function repairPython(input, cfg) {
+  const body = input && typeof input === 'object' ? input : {}
+  const env = resolveEnv(cfg)
+  const target = String(body.pythonPath || env.pythonPath || '').trim()
+  if (!target || target === 'python') throw fail('没有可修复的虚拟环境（当前用的是 PATH 里的 python）', 400)
+  const venvRoot = path.dirname(path.dirname(target))
+  const cfgPath = path.join(venvRoot, 'pyvenv.cfg')
+  if (!isFile(cfgPath)) throw fail('这个解释器不在虚拟环境里（找不到 pyvenv.cfg）', 400)
+
+  let backup = ''
+  try { backup = fs.readFileSync(cfgPath, 'utf8') } catch (error) {
+    throw fail(`读不了 ${cfgPath}：${error && error.message ? error.message : error}`, 400)
+  }
+
+  const tried = []
+  for (const candidate of await findCandidatePythons()) {
+    if (!isFile(candidate)) continue
+    const probe = await probePython(candidate, 8000)
+    if (!probe.ok || !/^3\.12\./.test(probe.version)) continue
+    const home = path.dirname(candidate)
+    const next = backup
+      .replace(/^home\s*=.*$/m, `home = ${home}`)
+      .replace(/^executable\s*=.*$/m, `executable = ${candidate}`)
+    try {
+      fs.writeFileSync(cfgPath, next)
+    } catch (error) {
+      tried.push(`${candidate}: 写入 pyvenv.cfg 失败`)
+      continue
+    }
+    const verify = await probeImports(target)
+    if (verify.ok) {
+      return { ok: true, base: candidate, version: probe.version, venv: target, message: `已把虚拟环境指向 ${candidate}（Python ${probe.version}）` }
+    }
+    tried.push(`${candidate}: 导入失败（${verify.message}）`)
+    try { fs.writeFileSync(cfgPath, backup) } catch { /* keep trying */ }
+  }
+
+  return {
+    ok: false,
+    tried,
+    message: tried.length
+      ? '找到的 Python 3.12 都无法让这个虚拟环境工作，建议重装引擎'
+      : '没找到 Python 3.12，无法修复；请先安装 Python 3.12 或重装引擎',
+  }
+}
+
 async function validateEngineInput(input) {
   const body = input && typeof input === 'object' ? input : {}
   const rootText = String(body.vsrRoot || '').trim()
@@ -2005,6 +2129,10 @@ function createHandler(cfg, jobs, detects, installs, models, originOf) {
         if (route === '/env/reset') {
           clearSettings()
           return send(200, { env: resolveEnv(cfg), saved: readSettings() })
+        }
+        if (route === '/env/repair') {
+          const repaired = await repairPython(body, cfg)
+          return send(200, Object.assign({}, repaired, { env: resolveEnv(cfg) }))
         }
         if (route === '/env/install') {
           const task = installs.start(body)
