@@ -72,6 +72,10 @@ function normalizeConfig(raw) {
     defaultDir: str(c.defaultDir),
     defaultMode: MODES.includes(c.defaultMode) ? c.defaultMode : 'sttn-auto',
     defaultDetect: c.defaultDetect === 'mobile' ? 'mobile' : 'server',
+    // Maintenance defaults: the plugin keeps itself and the engine current.
+    autoUpdate: c.autoUpdate !== false,
+    autoInstall: c.autoInstall !== false,
+    autoUpdateEngine: c.autoUpdateEngine !== false,
   }
 }
 
@@ -1916,6 +1920,159 @@ async function browse(cfg, rawPath) {
 }
 
 // ---------------------------------------------------------------------------
+// Self-maintenance: keep the plugin checkout and the engine checkout current
+// ---------------------------------------------------------------------------
+
+function gitBinary() {
+  const candidates = [
+    'C:\\Program Files\\Git\\cmd\\git.exe',
+    'C:\\Program Files (x86)\\Git\\cmd\\git.exe',
+  ]
+  for (const candidate of candidates) if (isFile(candidate)) return candidate
+  return 'git'
+}
+
+function createUpdater(cfg, activity) {
+  const state = {
+    plugin: { status: 'idle', behind: 0, lastCheck: 0, message: '' },
+    engine: { status: 'idle', behind: 0, lastCheck: 0, message: '' },
+    auto: { plugin: cfg.autoUpdate, install: cfg.autoInstall, engine: cfg.autoUpdateEngine },
+  }
+  const timers = []
+  let pluginRunning = false
+  let engineRunning = false
+  let disposed = false
+
+  const busy = () => {
+    try { return Boolean(activity && activity.busy()) } catch { return false }
+  }
+  const git = (root, args, timeoutMs = 60000) => captureCommand(gitBinary(), ['-C', root, ...args], timeoutMs)
+
+  async function inspect(target, root, auto) {
+    if (!root) {
+      target.status = 'missing'
+      target.message = '找不到可更新的目录'
+      return { updated: false }
+    }
+    const inside = await git(root, ['rev-parse', '--is-inside-work-tree'], 15000)
+    if (!inside.ok) {
+      target.status = 'not-a-repo'
+      target.message = '不是 git 仓库，跳过更新'
+      target.lastCheck = Date.now()
+      return { updated: false }
+    }
+    const dirty = await git(root, ['status', '--porcelain'], 30000)
+    if (!dirty.ok) {
+      target.status = 'error'
+      target.message = dirty.message
+      return { updated: false }
+    }
+    if (dirty.output.trim()) {
+      target.status = 'dirty'
+      target.message = '有本地改动，跳过自动更新'
+      target.lastCheck = Date.now()
+      return { updated: false }
+    }
+    const branchRes = await git(root, ['rev-parse', '--abbrev-ref', 'HEAD'], 15000)
+    const branch = branchRes.ok ? branchRes.output.trim() : ''
+    if (!branch) {
+      target.status = 'error'
+      target.message = '读不到当前分支'
+      return { updated: false }
+    }
+    const fetchRes = await git(root, ['fetch', '--quiet', 'origin'], 120000)
+    if (!fetchRes.ok) {
+      target.status = 'fetch-failed'
+      target.message = fetchRes.message
+      target.lastCheck = Date.now()
+      return { updated: false }
+    }
+    const beforeRes = await git(root, ['rev-parse', 'HEAD'], 15000)
+    const before = beforeRes.ok ? beforeRes.output.trim() : ''
+    const countRes = await git(root, ['rev-list', '--count', `HEAD..origin/${branch}`], 20000)
+    const behind = countRes.ok ? Number(countRes.output.trim()) || 0 : 0
+    target.behind = behind
+    target.branch = branch
+    target.lastCheck = Date.now()
+    if (!behind) {
+      target.status = 'up-to-date'
+      target.message = ''
+      return { updated: false }
+    }
+    target.status = 'behind'
+    target.message = `落后 ${behind} 个提交`
+    if (!auto || busy()) return { updated: false }
+    target.status = 'updating'
+    const pull = await git(root, ['pull', '--ff-only', 'origin', branch], 600000)
+    if (!pull.ok) {
+      target.status = 'pull-failed'
+      target.message = pull.message
+      return { updated: false }
+    }
+    const afterRes = await git(root, ['rev-parse', 'HEAD'], 15000)
+    target.status = 'updated'
+    target.behind = 0
+    target.message = `已更新到 origin/${branch}`
+    target.lastCheck = Date.now()
+    return { updated: true, before, after: afterRes.ok ? afterRes.output.trim() : '' }
+  }
+
+  async function checkPlugin() {
+    if (disposed || pluginRunning) return state.plugin
+    pluginRunning = true
+    try {
+      // Pulling our own checkout makes DSH hot-reload the plugin.
+      await inspect(state.plugin, HERE, cfg.autoUpdate)
+      return state.plugin
+    } finally {
+      pluginRunning = false
+    }
+  }
+
+  async function checkEngine() {
+    if (disposed || engineRunning) return state.engine
+    engineRunning = true
+    try {
+      const env = resolveEnv(cfg)
+      const result = await inspect(state.engine, env.vsrRoot, cfg.autoUpdateEngine)
+      if (result.updated && result.before && result.after && env.vsrRoot) {
+        const diff = await git(env.vsrRoot, ['diff', '--name-only', result.before, result.after], 30000)
+        if (diff.ok && /(^|\n)requirements\.txt/.test(diff.output)) {
+          state.engine.status = 'installing'
+          const pip = await captureCommand(env.pythonPath, ['-m', 'pip', 'install', '-r', path.join(env.vsrRoot, 'requirements.txt')], 900000)
+          state.engine.status = pip.ok ? 'updated' : 'pip-failed'
+          state.engine.message = pip.ok ? '引擎代码和依赖已更新' : `依赖更新失败：${pip.message}`
+        }
+      }
+      return state.engine
+    } finally {
+      engineRunning = false
+    }
+  }
+
+  function start() {
+    // Wait ten minutes so a fresh start never competes with a first job.
+    const first = 10 * 60 * 1000
+    timers.push(setTimeout(() => { if (!disposed) checkPlugin() }, first))
+    timers.push(setTimeout(() => { if (!disposed) checkEngine() }, first + 5 * 60 * 1000))
+    timers.push(setInterval(() => { if (!disposed) checkPlugin() }, 6 * 60 * 60 * 1000))
+    timers.push(setInterval(() => { if (!disposed) checkEngine() }, 24 * 60 * 60 * 1000))
+    for (const timer of timers) if (timer.unref) timer.unref()
+  }
+
+  function dispose() {
+    disposed = true
+    for (const timer of timers) { clearTimeout(timer); clearInterval(timer) }
+  }
+
+  function view() {
+    return JSON.parse(JSON.stringify(state))
+  }
+
+  return { start, dispose, checkPlugin, checkEngine, view }
+}
+
+// ---------------------------------------------------------------------------
 // HTTP surface
 // ---------------------------------------------------------------------------
 
@@ -1977,7 +2134,7 @@ function embedAllowed(req) {
   return site === 'same-origin' || site === 'none'
 }
 
-function createHandler(cfg, jobs, detects, installs, models, originOf) {
+function createHandler(cfg, jobs, detects, installs, models, originOf, updater) {
   let modelsLogged = false
   return async function handler(req, res) {
     const send = (code, body) => {
@@ -2000,6 +2157,7 @@ function createHandler(cfg, jobs, detects, installs, models, originOf) {
 
     try {
       if (req.method === 'GET') {
+        if (route === '/update') return send(200, { update: updater.view() })
         if (route === '/' || route === '/state') {
           return send(200, {
             env: resolveEnv(cfg),
@@ -2007,6 +2165,7 @@ function createHandler(cfg, jobs, detects, installs, models, originOf) {
             active: jobs.active(),
             detect: { active: detects.active() },
             install: { active: installs.active(), last: installs.last() },
+            update: updater.view(),
           })
         }
         if (route === '/jobs') return send(200, { jobs: jobs.list(), active: jobs.active() })
@@ -2134,6 +2293,14 @@ function createHandler(cfg, jobs, detects, installs, models, originOf) {
           const repaired = await repairPython(body, cfg)
           return send(200, Object.assign({}, repaired, { env: resolveEnv(cfg) }))
         }
+        if (route === '/update') {
+          return send(405, { error: 'use GET /update' })
+        }
+        if (route === '/update/check') {
+          const target = body && body.target === 'engine' ? 'engine' : 'plugin'
+          const result = target === 'engine' ? await updater.checkEngine() : await updater.checkPlugin()
+          return send(200, { update: updater.view(), result })
+        }
         if (route === '/env/install') {
           const task = installs.start(body)
           return send(200, { task: installs.publicTask(task) })
@@ -2174,11 +2341,16 @@ export function apply(ctx, config) {
   const jobs = createJobStore(cfg)
   const detects = createDetectStore(cfg, modelServices)
   const installs = createInstallStore(cfg)
+  const updater = createUpdater(cfg, {
+    busy: () => Boolean(jobs.active()) || Boolean(detects.active()) || Boolean(installs.active()),
+  })
+  updater.start()
 
   ctx.effect(() => () => {
     jobs.dispose()
     detects.dispose()
     installs.dispose()
+    updater.dispose()
   })
 
   if (typeof ctx.inject === 'function') {
@@ -2198,7 +2370,7 @@ export function apply(ctx, config) {
           path: API,
           handler: createHandler(cfg, jobs, detects, installs, modelServices, () => {
             try { return sub.webServer.getOrigin() } catch { return '' }
-          }),
+          }, updater),
         }),
         'subtitle-remover: api route',
       )

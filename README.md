@@ -151,7 +151,26 @@ first (`<workspace>/vsr`, `<workspace>/vsr-env/Scripts/python.exe`).
     defaultDir: 'D:\videos'
     defaultMode: 'sttn-auto'
     defaultDetect: 'server'                      # or 'mobile'
+    autoUpdate: true                             # keep this checkout current (git pull --ff-only)
+    autoInstall: true                            # install the engine automatically when it is missing
+    autoUpdateEngine: true                       # keep the engine checkout and its requirements current
 ```
+
+## Automatic maintenance
+
+- **Plugin self-update** — every six hours the Host runs `git fetch` in this
+  checkout's folder. If the tree is clean, nothing is running and the branch is
+  behind, it runs `git pull --ff-only`; DSH hot-reloads the plugin afterwards. No
+  version bump is needed — installs and updates follow the repository head.
+- **Engine auto-install** — when the page finds no engine it shows a ten second
+  countdown and then starts the installer on `engine/video-subtitle-remover`
+  (cancellable at any point).
+- **Engine auto-update** — once a day the engine checkout is fetched; when it is
+  clean and behind, it is fast-forwarded and `requirements.txt` is reinstalled only
+  when that file changed.
+- All three are on by default and can be switched off with the config keys above.
+  Engine updates follow video-subtitle-remover's `main`, so a pinned setup that
+  depends on a specific build should set `autoUpdateEngine: false`.
 
 ## Requirements
 

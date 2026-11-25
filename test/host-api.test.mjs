@@ -190,6 +190,11 @@ async function main() {
 
   check('state exposes install slots', Boolean(state.body.install && 'active' in state.body.install && 'last' in state.body.install))
 
+  const update = await call('GET', '/dsh-subtitle-remover/api/update')
+  check('update status is exposed', update.status === 200
+    && Boolean(update.body.update && update.body.update.plugin && update.body.update.engine), JSON.stringify(update.body).slice(0, 160))
+  check('update defaults are reported', Boolean(update.body.update && update.body.update.auto && 'plugin' in update.body.update.auto && 'engine' in update.body.update.auto))
+
   const reset = await call('POST', '/dsh-subtitle-remover/api/env/reset', { body: {} })
   check('reset returns to auto-detect', reset.status === 200 && reset.body.env.vsrSource === 'auto', reset.body.env && reset.body.env.vsrSource)
 

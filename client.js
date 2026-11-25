@@ -88,6 +88,24 @@ window.__ModuleLoader__.load({
         'setup.repairOk': '已修复：{message}',
         'setup.repairFailed': '修复失败：{message}',
         'setup.repairHint': '虚拟环境的基础解释器丢失了。插件会尝试把它指向本机已安装的 Python 3.12，并验证依赖能否导入。',
+        'setup.pluginUpdate': '插件',
+        'setup.engineUpdate': '引擎',
+        'setup.updateCheck': '检查更新',
+        'setup.updateChecking': '检查中…',
+        'setup.autoInstall': '未找到引擎，{n} 秒后自动安装到 {target}',
+        'setup.updateStatus.idle': '未检查',
+        'setup.updateStatus.up-to-date': '已是最新',
+        'setup.updateStatus.behind': '有更新',
+        'setup.updateStatus.updated': '已更新',
+        'setup.updateStatus.updating': '更新中…',
+        'setup.updateStatus.installing': '安装依赖…',
+        'setup.updateStatus.dirty': '有本地改动，跳过',
+        'setup.updateStatus.not-a-repo': '非 git 仓库',
+        'setup.updateStatus.fetch-failed': '检查失败',
+        'setup.updateStatus.pull-failed': '更新失败',
+        'setup.updateStatus.pip-failed': '依赖更新失败',
+        'setup.updateStatus.missing': '未找到',
+        'setup.updateStatus.error': '出错',
         'setup.source': '来源：{source}',
         'setup.source.settings': '手动指定',
         'setup.source.config': '配置文件',
@@ -267,6 +285,24 @@ window.__ModuleLoader__.load({
         'setup.repairOk': 'Repaired: {message}',
         'setup.repairFailed': 'Repair failed: {message}',
         'setup.repairHint': 'The virtualenv lost the interpreter it was created from. The plugin will repoint it at an installed Python 3.12 and verify the imports.',
+        'setup.pluginUpdate': 'Plugin',
+        'setup.engineUpdate': 'Engine',
+        'setup.updateCheck': 'Check updates',
+        'setup.updateChecking': 'Checking…',
+        'setup.autoInstall': 'No engine found; installing to {target} in {n}s',
+        'setup.updateStatus.idle': 'not checked',
+        'setup.updateStatus.up-to-date': 'up to date',
+        'setup.updateStatus.behind': 'update available',
+        'setup.updateStatus.updated': 'updated',
+        'setup.updateStatus.updating': 'updating…',
+        'setup.updateStatus.installing': 'installing dependencies…',
+        'setup.updateStatus.dirty': 'local changes, skipped',
+        'setup.updateStatus.not-a-repo': 'not a git checkout',
+        'setup.updateStatus.fetch-failed': 'check failed',
+        'setup.updateStatus.pull-failed': 'update failed',
+        'setup.updateStatus.pip-failed': 'dependency update failed',
+        'setup.updateStatus.missing': 'not found',
+        'setup.updateStatus.error': 'error',
         'setup.source': 'Source: {source}',
         'setup.source.settings': 'chosen in the page',
         'setup.source.config': 'config file',
@@ -861,6 +897,10 @@ window.__ModuleLoader__.load({
       const [installing, setInstalling] = useState(false)
       const [picking, setPicking] = useState(null)
       const [repairing, setRepairing] = useState(false)
+      const [autoIn, setAutoIn] = useState(0)
+      const [checkingUpdate, setCheckingUpdate] = useState('')
+      const autoCancelled = useRef(false)
+      const autoStarted = useRef(false)
       const localInstalls = useRef(new Set())
       const announcedInstall = useRef('')
 
@@ -1007,6 +1047,49 @@ window.__ModuleLoader__.load({
         try { await api(`/env/install/${encodeURIComponent(installTask.id)}/cancel`, {}) } catch { /* ignore */ }
       }
 
+      // Auto-install: when no engine exists, give the user ten seconds to cancel
+      // and then start the installer on the default target.
+      const engineReady = Boolean(env && env.engineReady)
+      useEffect(() => {
+        if (!env) return
+        if (engineReady) { setAutoIn(0); return }
+        if (autoCancelled.current || autoStarted.current || installing) return
+        if (installTask && installTask.status === 'running') return
+        if (autoIn <= 0) { setAutoIn(10); return }
+        const timer = setTimeout(() => setAutoIn((value) => value - 1), 1000)
+        return () => clearTimeout(timer)
+      }, [env, engineReady, autoIn, installing, installTask])
+
+      useEffect(() => {
+        if (autoIn !== 1 || engineReady || autoCancelled.current || autoStarted.current) return
+        autoStarted.current = true
+        setAutoIn(0)
+        if (!installing) startInstall()
+      }, [autoIn, engineReady])
+
+      const runUpdateCheck = async (target) => {
+        setCheckingUpdate(target)
+        setMessage(null)
+        try {
+          const res = await api('/update/check', { target })
+          props.onUpdate(res.update)
+          const status = (res.update && res.update[target] && res.update[target].status) || ''
+          setMessage({ kind: status === 'updated' || status === 'up-to-date' ? 'ok' : 'error', text: t('setup.updateStatus.' + (status || 'idle')) })
+        } catch (error) {
+          setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
+        } finally {
+          setCheckingUpdate('')
+        }
+      }
+
+      const update = props.update || null
+      const updateLabel = (target) => {
+        const node = update && update[target]
+        if (!node) return t('setup.updateStatus.idle')
+        const base = t('setup.updateStatus.' + (node.status || 'idle'))
+        return node.behind ? `${base}（${node.behind}）` : base
+      }
+
       const sourceKey = env && env.vsrSource ? `setup.source.${env.vsrSource}` : 'setup.source.auto'
 
       return h('section', { className: 'vsr-card vsr-setup' },
@@ -1065,6 +1148,28 @@ window.__ModuleLoader__.load({
 
         env && env.pythonBroken
           ? h('div', { className: 'vsr-hint vsr-error' }, t('setup.repairHint'))
+          : null,
+
+        h('div', { className: 'vsr-setup-actions vsr-maintenance' },
+          h('span', { className: 'vsr-hint' }, `${t('setup.pluginUpdate')}：${updateLabel('plugin')}`),
+          h('button', {
+            type: 'button', className: 'vsr-btn small', disabled: checkingUpdate === 'plugin',
+            onClick: () => runUpdateCheck('plugin'),
+          }, checkingUpdate === 'plugin' ? t('setup.updateChecking') : t('setup.updateCheck')),
+          h('span', { className: 'vsr-hint' }, `${t('setup.engineUpdate')}：${updateLabel('engine')}`),
+          h('button', {
+            type: 'button', className: 'vsr-btn small', disabled: checkingUpdate === 'engine',
+            onClick: () => runUpdateCheck('engine'),
+          }, checkingUpdate === 'engine' ? t('setup.updateChecking') : t('setup.updateCheck')),
+        ),
+
+        env && !engineReady && !autoStarted.current
+          ? h('div', { className: 'vsr-hint vsr-error vsr-auto-install' },
+            t('setup.autoInstall', { n: autoIn, target: targetDir || t('setup.installTarget') }),
+            h('button', {
+              type: 'button', className: 'vsr-btn small',
+              onClick: () => { autoCancelled.current = true; setAutoIn(0) },
+            }, t('common.cancel')))
           : null,
 
         message ? h('div', { className: `vsr-notice ${message.kind}` }, message.text) : null,
@@ -1182,6 +1287,7 @@ window.__ModuleLoader__.load({
       const [catalogue, setCatalogue] = useState(null)
       const [setupOpen, setSetupOpen] = useState(false)
       const [installState, setInstallState] = useState(null)
+      const [updateState, setUpdateState] = useState(null)
       const lastProbedPath = useRef('')
 
       useEffect(() => {
@@ -1209,6 +1315,7 @@ window.__ModuleLoader__.load({
             setJobs(Array.isArray(state.jobs) ? state.jobs : [])
             setActive(state.active || '')
             setInstallState(state.install || null)
+            setUpdateState(state.update || null)
             setOffline('')
             busy = Boolean(state.active) || Boolean(state.detect && state.detect.active) || Boolean(state.install && state.install.active)
             const watch = selectedId || state.active || (state.jobs && state.jobs[0] ? state.jobs[0].id : '')
@@ -1573,6 +1680,8 @@ window.__ModuleLoader__.load({
               t,
               env,
               install: installState,
+              update: updateState,
+              onUpdate: (next) => setUpdateState(next || null),
               onClose: () => setSetupOpen(false),
               onRefresh: (nextEnv) => {
                 if (nextEnv) setEnv(nextEnv)
@@ -2132,6 +2241,8 @@ window.__ModuleLoader__.load({
 .vsr-setup-install { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l1); display: flex; flex-direction: column; gap: 8px; }
 .vsr-setup-install > summary { cursor: pointer; }
 .vsr-setup-install > summary:hover { color: var(--dsw-alias-label-primary); }
+.vsr-maintenance { padding-top: 10px; border-top: 1px dashed var(--dsw-alias-border-l1); margin-top: 10px; }
+.vsr-auto-install { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .vsr-install-progress { flex: 1 1 220px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .vsr-notice { padding: 8px 12px; border-radius: 9px; font-size: 12.5px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); }
 .vsr-notice.ok { border-color: var(--dsw-alias-state-success-primary); }
