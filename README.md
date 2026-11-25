@@ -113,6 +113,12 @@ Harness webServer, same origin, loopback + same-origin checked):
 Precedence: the folder saved from the page, then the config below, then automatic
 detection.
 
+**Python stays inside the plugin.** The engine needs CPython 3.12; when the machine
+has none, the installer (and the `修复 Python 环境` action) downloads the embeddable
+`python-3.12.10-embed-amd64.zip` into `engine/python312` — about 11 MB, no installer,
+no registry entries, no PATH change, and nothing is added to a system-wide Python.
+A virtualenv (or the portable copy's own `Lib/site-packages`) points at it.
+
 1. **Automatic** — the Host looks next to the plugin, in `~`, `~/Documents`,
    `~/projects`, and the working directory for a checkout of
    video-subtitle-remover with its virtualenv.
@@ -131,9 +137,9 @@ detection.
    are missing.
 4. **Repair** — a virtualenv breaks whenever the Python it was created from
    disappears (machine rebuilt, Python replaced). The panel reports the missing base
-   interpreter and offers `修复 Python 环境`: it repoints `pyvenv.cfg` at an installed
-   Python 3.12, verifies that `cv2`, `torch` and `paddle` still import, and rolls the
-   file back if they do not.
+   interpreter and offers `修复 Python 环境`: it repoints `pyvenv.cfg` at the portable
+   `engine/python312` copy (provisioning it when missing), verifies that `cv2`,
+   `torch` and `paddle` still import, and rolls the file back if they do not.
 
 ## Configuration
 

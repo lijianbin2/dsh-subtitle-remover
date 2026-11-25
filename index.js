@@ -228,6 +228,8 @@ function resolveEnv(cfg) {
     pythonCandidates.push({ value: path.join(envDir, 'Scripts', 'python.exe'), source: 'auto' })
     pythonCandidates.push({ value: path.join(envDir, 'bin', 'python'), source: 'auto' })
   }
+  // A portable interpreter installed by the page lives inside the plugin folder.
+  pythonCandidates.push({ value: path.join(HERE, 'engine', 'python312', 'python.exe'), source: 'auto' })
   pythonCandidates.push({ value: 'python', source: 'auto' })
 
   let pythonPath = 'python'
@@ -1427,6 +1429,66 @@ function captureCommand(command, args, timeoutMs = 8000) {
   })
 }
 
+/** The self-contained interpreter the plugin keeps inside its own folder. */
+const PORTABLE_PY_DIR = path.join(HERE, 'engine', 'python312')
+const PORTABLE_PY_EXE = path.join(PORTABLE_PY_DIR, 'python.exe')
+const PORTABLE_PY_URL = 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip'
+
+/**
+ * Download the embeddable CPython 3.12 into engine/python312. Nothing is
+ * installed system-wide: the engine's virtualenv points at this copy.
+ */
+async function provisionPortablePython() {
+  if (isFile(PORTABLE_PY_EXE)) return PORTABLE_PY_EXE
+  fs.mkdirSync(PORTABLE_PY_DIR, { recursive: true })
+  const zipPath = path.join(os.tmpdir(), `dsh-vsr-python312-${Date.now()}.zip`)
+  let response = null
+  try {
+    response = await fetch(PORTABLE_PY_URL)
+  } catch (error) {
+    throw fail(`下载便携 Python 3.12 失败：${error && error.message ? error.message : error}`, 502)
+  }
+  if (!response.ok) throw fail(`下载便携 Python 3.12 失败：HTTP ${response.status}`, 502)
+  fs.writeFileSync(zipPath, Buffer.from(await response.arrayBuffer()))
+  const untar = await captureCommand('tar', ['-xf', zipPath, '-C', PORTABLE_PY_DIR], 180000)
+  try { fs.rmSync(zipPath, { force: true }) } catch { /* best effort */ }
+  if (!untar.ok) throw fail(`解压便携 Python 3.12 失败：${untar.message}`, 500)
+  // The embeddable distribution ships an isolated sys.path; site must be on so
+  // packages installed into Lib\site-packages are visible.
+  const pth = path.join(PORTABLE_PY_DIR, 'python312._pth')
+  fs.mkdirSync(path.join(PORTABLE_PY_DIR, 'Lib', 'site-packages'), { recursive: true })
+  if (isFile(pth)) {
+    const text = fs.readFileSync(pth, 'utf8')
+    const lines = text.split(/\r?\n/).filter((line) => line.trim() && !/^import site$/m.test(line))
+    if (!lines.includes('Lib\\site-packages')) lines.push('Lib\\site-packages')
+    lines.push('import site')
+    fs.writeFileSync(pth, lines.join('\r\n'))
+  }
+  if (!isFile(PORTABLE_PY_EXE)) throw fail('便携 Python 解压后缺少 python.exe', 500)
+  return PORTABLE_PY_EXE
+}
+
+/** Make sure a Python has pip, bootstrapping it with get-pip.py when needed. */
+async function ensurePip(pythonExe, task, step) {
+  const probe = await captureCommand(pythonExe, ['-m', 'pip', '--version'], 90000)
+  if (probe.ok) return
+  pushLog(task, '没有可用的 pip，下载 get-pip.py …')
+  let response = null
+  try {
+    response = await fetch('https://bootstrap.pypa.io/get-pip.py')
+  } catch (error) {
+    throw fail(`下载 pip 失败：${error && error.message ? error.message : error}`, 502)
+  }
+  if (!response.ok) throw fail(`下载 pip 失败：HTTP ${response.status}`, 502)
+  const file = path.join(os.tmpdir(), `get-pip-${Date.now()}.py`)
+  fs.writeFileSync(file, Buffer.from(await response.arrayBuffer()))
+  try {
+    await step(task, '引导 pip', pythonExe, [file], 24)
+  } finally {
+    try { fs.rmSync(file, { force: true }) } catch { /* best effort */ }
+  }
+}
+
 /** Candidate base interpreters that could back a cp312 virtualenv. */
 async function findCandidatePythons() {
   const list = []
@@ -1434,6 +1496,8 @@ async function findCandidatePythons() {
     const text = String(value || '').trim()
     if (text && /python(3\.12)?\.exe$/i.test(text) && !list.includes(text)) list.push(text)
   }
+  // The plugin's own portable copy wins: it never depends on the machine.
+  add(PORTABLE_PY_EXE)
   const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
   const roaming = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming')
   add(path.join(local, 'Programs', 'Python', 'Python312', 'python.exe'))
@@ -1483,34 +1547,50 @@ async function repairPython(input, cfg) {
   }
 
   const tried = []
-  for (const candidate of await findCandidatePythons()) {
-    if (!isFile(candidate)) continue
-    const probe = await probePython(candidate, 8000)
-    if (!probe.ok || !/^3\.12\./.test(probe.version)) continue
-    const home = path.dirname(candidate)
-    const next = backup
-      .replace(/^home\s*=.*$/m, `home = ${home}`)
-      .replace(/^executable\s*=.*$/m, `executable = ${candidate}`)
-    try {
-      fs.writeFileSync(cfgPath, next)
-    } catch (error) {
-      tried.push(`${candidate}: 写入 pyvenv.cfg 失败`)
-      continue
+  const tryCandidates = async (candidates) => {
+    for (const candidate of candidates) {
+      if (!isFile(candidate)) continue
+      const probe = await probePython(candidate, 8000)
+      if (!probe.ok || !/^3\.12\./.test(probe.version)) continue
+      const home = path.dirname(candidate)
+      const next = backup
+        .replace(/^home\s*=.*$/m, `home = ${home}`)
+        .replace(/^executable\s*=.*$/m, `executable = ${candidate}`)
+      try {
+        fs.writeFileSync(cfgPath, next)
+      } catch {
+        tried.push(`${candidate}: 写入 pyvenv.cfg 失败`)
+        continue
+      }
+      const verify = await probeImports(target)
+      if (verify.ok) {
+        return { ok: true, base: candidate, version: probe.version, venv: target, message: `已把虚拟环境指向 ${candidate}（Python ${probe.version}）` }
+      }
+      tried.push(`${candidate}: 导入失败（${verify.message}）`)
+      try { fs.writeFileSync(cfgPath, backup) } catch { /* keep trying */ }
     }
-    const verify = await probeImports(target)
-    if (verify.ok) {
-      return { ok: true, base: candidate, version: probe.version, venv: target, message: `已把虚拟环境指向 ${candidate}（Python ${probe.version}）` }
-    }
-    tried.push(`${candidate}: 导入失败（${verify.message}）`)
-    try { fs.writeFileSync(cfgPath, backup) } catch { /* keep trying */ }
+    return null
   }
+
+  let repaired = await tryCandidates(await findCandidatePythons())
+  if (!repaired && !isFile(PORTABLE_PY_EXE)) {
+    // Nothing usable on the machine: keep it self-contained instead of asking
+    // the user to install a second Python system-wide.
+    try {
+      await provisionPortablePython()
+      repaired = await tryCandidates([PORTABLE_PY_EXE])
+    } catch (error) {
+      tried.push(String(error && error.message ? error.message : error))
+    }
+  }
+  if (repaired) return repaired
 
   return {
     ok: false,
     tried,
     message: tried.length
       ? '找到的 Python 3.12 都无法让这个虚拟环境工作，建议重装引擎'
-      : '没找到 Python 3.12，无法修复；请先安装 Python 3.12 或重装引擎',
+      : '没找到 Python 3.12，且便携版下载失败；请重装引擎',
   }
 }
 
@@ -1722,14 +1802,49 @@ function createInstallStore(cfg) {
         ['clone', '--depth', '1', 'https://github.com/YaoFANGUK/video-subtitle-remover', task.targetDir], 10,
         path.dirname(task.targetDir))
 
-      const venvDir = path.join(task.targetDir, 'venv')
-      await step(task, '创建虚拟环境', task.python, ['-m', 'venv', venvDir], 20)
-      const venvPython = process.platform === 'win32'
-        ? path.join(venvDir, 'Scripts', 'python.exe')
-        : path.join(venvDir, 'bin', 'python')
-      task.venvPython = venvPython
+      // The engine needs CPython 3.12; prefer the plugin's own portable copy so
+      // nothing has to be installed system-wide.
+      let basePython = task.python && task.python !== 'python' ? task.python : ''
+      if (basePython) {
+        const probe = await probePython(basePython, 8000)
+        if (!probe.ok || !/^3\.12\./.test(probe.version)) basePython = ''
+      }
+      if (!basePython) {
+        for (const candidate of await findCandidatePythons()) {
+          if (!isFile(candidate)) continue
+          const probe = await probePython(candidate, 8000)
+          if (probe.ok && /^3\.12\./.test(probe.version)) { basePython = candidate; break }
+        }
+      }
+      if (!basePython) {
+        task.stage = '下载便携 Python 3.12'
+        pushLog(task, '没有找到 Python 3.12，下载便携版到 engine\\python312 …')
+        basePython = await provisionPortablePython()
+      }
+      pushLog(task, `使用 Python：${basePython}`)
 
-      await step(task, '升级 pip', venvPython, ['-m', 'pip', 'install', '-U', 'pip'], 26)
+      let venvPython = ''
+      if (basePython === PORTABLE_PY_EXE) {
+        // The embeddable build has no venv module: install straight into its own
+        // Lib\site-packages so the whole environment stays inside the plugin.
+        task.stage = '准备便携环境'
+        await ensurePip(basePython, task, step)
+        venvPython = basePython
+      } else {
+        const venvDir = path.join(task.targetDir, 'venv')
+        try {
+          await step(task, '创建虚拟环境', basePython, ['-m', 'venv', venvDir], 20)
+        } catch (error) {
+          pushLog(task, `普通 venv 失败，改用 --without-pip：${error && error.message ? error.message : error}`)
+          await step(task, '创建虚拟环境（无 pip）', basePython, ['-m', 'venv', '--without-pip', venvDir], 20)
+        }
+        venvPython = process.platform === 'win32'
+          ? path.join(venvDir, 'Scripts', 'python.exe')
+          : path.join(venvDir, 'bin', 'python')
+        await ensurePip(venvPython, task, step)
+        await step(task, '升级 pip', venvPython, ['-m', 'pip', 'install', '-U', 'pip'], 26)
+      }
+      task.venvPython = venvPython
 
       const cudaFlavor = flavor === 'cuda118' || flavor === 'cuda126'
       const torchIndex = flavor === 'cuda118'
